@@ -1,8 +1,10 @@
 package graphql
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"sync"
 
 	"github.com/graph-gophers/graphql-go"
