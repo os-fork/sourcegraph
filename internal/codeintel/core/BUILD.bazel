@@ -2,7 +2,11 @@ load("@io_bazel_rules_go//go:def.bzl", "go_library")
 
 go_library(
     name = "core",
-    srcs = ["paths.go"],
+    srcs = [
+        "paths.go",
+        "upload.go",
+    ],
     importpath = "github.com/sourcegraph/sourcegraph/internal/codeintel/core",
     visibility = ["//:__subpackages__"],
+    deps = ["//internal/api"],
 )
