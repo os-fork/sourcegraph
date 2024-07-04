@@ -158,7 +158,7 @@ func getChatModelFn(db database.DB) getModelFn {
 				return legacyMRef.ToModelRef(), nil
 			}
 			errModelNotAllowed := errors.Errorf(
-				"the requested model is not available (%q, onProTier=%b)",
+				"the requested model is not available (%q, onProTier=%v)",
 				requestParams.Model, subscription.ApplyProRateLimits)
 			return "", errModelNotAllowed
 		}
@@ -341,7 +341,8 @@ func resolveRequestedModel(
 			ServerSideConfig: cfg.Providers[0].ServerSideConfig,
 		}
 		fauxModel := modelconfigSDK.Model{
-			ModelRef: mref,
+			ModelRef:  mref,
+			ModelName: string(mref.ModelID()),
 			// Leave everything invalid, even ContextWindow.
 			// Which will for the time being be set within the
 			// completion provider.

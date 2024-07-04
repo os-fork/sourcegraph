@@ -47,7 +47,7 @@ type codyGatewayClient struct {
 
 func (c *codyGatewayClient) Stream(
 	ctx context.Context, logger log.Logger, request types.CompletionRequest, sendEvent types.SendCompletionEvent) error {
-	cc, err := c.clientForParams(request.Feature, &request)
+	cc, err := c.clientForParams(logger, request.Feature, &request)
 	if err != nil {
 		return err
 	}
@@ -57,7 +57,7 @@ func (c *codyGatewayClient) Stream(
 }
 
 func (c *codyGatewayClient) Complete(ctx context.Context, logger log.Logger, request types.CompletionRequest) (*types.CompletionResponse, error) {
-	cc, err := c.clientForParams(request.Feature, &request)
+	cc, err := c.clientForParams(logger, request.Feature, &request)
 	if err != nil {
 		return nil, err
 	}
@@ -77,9 +77,14 @@ func overwriteErrSource(err error) error {
 	return err
 }
 
-func (c *codyGatewayClient) clientForParams(feature types.CompletionsFeature, request *types.CompletionRequest) (types.CompletionsClient, error) {
-	// Tease out the ProviderID and ModelID from the requested model.
+func (c *codyGatewayClient) clientForParams(logger log.Logger, feature types.CompletionsFeature, request *types.CompletionRequest) (types.CompletionsClient, error) {
 	model := request.ModelConfigInfo.Model
+	logger.Info(
+		"getting completions client for Cody Gateway routed request",
+		log.String("mref", string(model.ModelRef)),
+		log.String("modelName", model.ModelName))
+
+	// Tease out the ProviderID and ModelID from the requested model.
 	providerID := model.ModelRef.ProviderID() // e.g. "anthropic"
 	modelID := model.ModelRef.ModelID()       // e.g. "claude-1.5-instant"
 

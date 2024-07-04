@@ -145,7 +145,10 @@ func newCompletionsHandler(
 		defer done()
 
 		// Will the current LLM request be sent to Cody Gateway?
-		willBeSentToCodyGateway := providerConfig.ServerSideConfig.SourcegraphProvider == nil
+		var willBeSentToCodyGateway bool
+		if ssConfig := providerConfig.ServerSideConfig; ssConfig != nil {
+			willBeSentToCodyGateway = ssConfig.SourcegraphProvider != nil
+		}
 
 		// dotcomUserTokenForCodyGateway is the Sourcegraph dotcom access token to use for the request
 		// made to Cody Gateway. See the comment on ModelConfigInfo.CodyProUserAccessToken for more info.
@@ -154,8 +157,8 @@ func newCompletionsHandler(
 			// Confirm the required provider is Cody Gateway. We may later support LLM models that are
 			// not proxied through Cody Gateway. But for now, it is the only case and we are just confirming
 			// things are configured the way we expect.
-			if willBeSentToCodyGateway {
-				logger.Error("dotcom received request that will not be routed to Cody Gateway")
+			if !willBeSentToCodyGateway {
+				logger.Error("the configuration is wrong, dotcom received request that will NOT be routed to Cody Gateway")
 				http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
 				return
 			}
