@@ -15,7 +15,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/sourcegraph/sourcegraph/internal/auth/providers"
 	"github.com/sourcegraph/sourcegraph/internal/authz"
 	"github.com/sourcegraph/sourcegraph/internal/authz/providers/gitlab"
 	"github.com/sourcegraph/sourcegraph/internal/conf"
@@ -295,12 +294,10 @@ func TestAuthzProvidersFromConfig(t *testing.T) {
 			expAuthzProviders: providersEqual(
 				gitlabAuthzProviderParams{
 					SudoOp: gitlab.SudoProviderOp{
-						URN:     "extsvc:gitlab:0",
-						BaseURL: mustURLParse(t, "https://gitlab.mine"),
-						AuthnConfigID: providers.ConfigID{
-							Type: "saml",
-							ID:   "okta",
-						},
+						URN:                         "extsvc:gitlab:0",
+						BaseURL:                     mustURLParse(t, "https://gitlab.mine"),
+						AuthnProviderConfigID:       "okta",
+						AuthnProviderConfigType:     "saml",
 						GitLabProvider:              "my-external",
 						SudoToken:                   "asdf",
 						UseNativeUsername:           false,

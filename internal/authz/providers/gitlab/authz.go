@@ -3,7 +3,6 @@ package gitlab
 import (
 	"net/url"
 
-	"github.com/sourcegraph/sourcegraph/internal/auth/providers"
 	"github.com/sourcegraph/sourcegraph/internal/authz"
 	atypes "github.com/sourcegraph/sourcegraph/internal/authz/types"
 	"github.com/sourcegraph/sourcegraph/internal/database"
@@ -112,12 +111,10 @@ func newAuthzProvider(db database.DB, c *types.GitLabConnection, ps []schema.Aut
 			foundMatchingOIDC := oidc != nil && oidc.ConfigID == ext.AuthProviderID && ext.AuthProviderType == oidc.Type
 			if foundMatchingSAML || foundMatchingOIDC {
 				return NewSudoProvider(SudoProviderOp{
-					URN:     c.URN,
-					BaseURL: glURL,
-					AuthnConfigID: providers.ConfigID{
-						Type: ext.AuthProviderType,
-						ID:   ext.AuthProviderID,
-					},
+					URN:                         c.URN,
+					BaseURL:                     glURL,
+					AuthnProviderConfigID:       ext.AuthProviderID,
+					AuthnProviderConfigType:     ext.AuthProviderType,
 					GitLabProvider:              ext.GitlabProvider,
 					SudoToken:                   c.Token,
 					UseNativeUsername:           false,
