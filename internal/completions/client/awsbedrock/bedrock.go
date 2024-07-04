@@ -22,9 +22,10 @@ import (
 
 	"github.com/sourcegraph/sourcegraph/internal/completions/tokenusage"
 	"github.com/sourcegraph/sourcegraph/internal/completions/types"
-	"github.com/sourcegraph/sourcegraph/internal/conf/conftypes"
 	"github.com/sourcegraph/sourcegraph/internal/httpcli"
 	"github.com/sourcegraph/sourcegraph/lib/errors"
+
+	modelconfigSDK "github.com/sourcegraph/sourcegraph/internal/modelconfig/types"
 )
 
 func NewClient(cli httpcli.Doer, endpoint, accessToken string, tokenManager tokenusage.Manager) types.CompletionsClient {
@@ -52,11 +53,7 @@ func (c *awsBedrockAnthropicCompletionStreamClient) Complete(
 	logger log.Logger,
 	request types.CompletionRequest) (*types.CompletionResponse, error) {
 
-	feature := request.Feature
-	version := request.Version
-	requestParams := request.Parameters
-
-	resp, err := c.makeRequest(ctx, requestParams, version, false)
+	resp, err := c.makeRequest(ctx, request, false /* stream */)
 	if err != nil {
 		return nil, errors.Wrap(err, "making request")
 	}
@@ -71,8 +68,11 @@ func (c *awsBedrockAnthropicCompletionStreamClient) Complete(
 		completion += content.Text
 	}
 
-	parsedModelId := conftypes.NewBedrockModelRefFromModelID(requestParams.Model)
-	err = c.tokenManager.UpdateTokenCountsFromModelUsage(response.Usage.InputTokens, response.Usage.OutputTokens, "anthropic/"+parsedModelId.Model, string(feature), tokenusage.AwsBedrock)
+	// e.g. "anthropic/claude-instant"
+	feature := request.Feature
+	qualifiedModelName := fmt.Sprintf("anthropic/%s", request.ModelConfigInfo.Model.ModelName)
+	err = c.tokenManager.UpdateTokenCountsFromModelUsage(
+		response.Usage.InputTokens, response.Usage.OutputTokens, qualifiedModelName, string(feature), tokenusage.AwsBedrock)
 	if err != nil {
 		return nil, err
 	}
@@ -88,11 +88,7 @@ func (a *awsBedrockAnthropicCompletionStreamClient) Stream(
 	request types.CompletionRequest,
 	sendEvent types.SendCompletionEvent) error {
 
-	feature := request.Feature
-	version := request.Version
-	requestParams := request.Parameters
-
-	resp, err := a.makeRequest(ctx, requestParams, version, true)
+	resp, err := a.makeRequest(ctx, request, true /* stream */)
 	if err != nil {
 		return errors.Wrap(err, "making request")
 	}
@@ -159,8 +155,10 @@ func (a *awsBedrockAnthropicCompletionStreamClient) Stream(
 		case "message_delta":
 			if event.Delta != nil {
 				stopReason = event.Delta.StopReason
-				parsedModelId := conftypes.NewBedrockModelRefFromModelID(requestParams.Model)
-				err = a.tokenManager.UpdateTokenCountsFromModelUsage(inputPromptTokens, event.Usage.OutputTokens, "anthropic/"+parsedModelId.Model, string(feature), tokenusage.AwsBedrock)
+				qualifiedModelName := fmt.Sprintf("anthropic/%s", request.ModelConfigInfo.Model.ModelName)
+				feature := request.Feature
+				err = a.tokenManager.UpdateTokenCountsFromModelUsage(
+					inputPromptTokens, event.Usage.OutputTokens, qualifiedModelName, string(feature), tokenusage.AwsBedrock)
 				if err != nil {
 					logger.Warn("Failed to count tokens with the token manager %w ", log.Error(err))
 				}
@@ -183,7 +181,10 @@ type awsEventStreamPayload struct {
 	Bytes []byte `json:"bytes"`
 }
 
-func (c *awsBedrockAnthropicCompletionStreamClient) makeRequest(ctx context.Context, requestParams types.CompletionRequestParameters, version types.CompletionsVersion, stream bool) (*http.Response, error) {
+func (c *awsBedrockAnthropicCompletionStreamClient) makeRequest(
+	ctx context.Context, request types.CompletionRequest, stream bool) (*http.Response, error) {
+	requestParams := request.Parameters
+
 	defaultConfig, err := config.LoadDefaultConfig(ctx, awsConfigOptsForKeyConfig(c.endpoint, c.accessToken)...)
 	if err != nil {
 		return nil, errors.Wrap(err, "loading aws config")
@@ -208,7 +209,7 @@ func (c *awsBedrockAnthropicCompletionStreamClient) makeRequest(ctx context.Cont
 
 	convertedMessages := requestParams.Messages
 	stopSequences := removeWhitespaceOnlySequences(requestParams.StopSequences)
-	if version == types.CompletionsVersionLegacy {
+	if request.Version == types.CompletionsVersionLegacy {
 		convertedMessages = types.ConvertFromLegacyMessages(convertedMessages)
 	}
 
@@ -240,7 +241,8 @@ func (c *awsBedrockAnthropicCompletionStreamClient) makeRequest(ctx context.Cont
 		return nil, errors.Wrap(err, "marshalling request body")
 	}
 
-	apiURL := buildApiUrl(c.endpoint, requestParams.Model, stream, defaultConfig.Region)
+	model := request.ModelConfigInfo.Model
+	apiURL := buildApiUrl(c.endpoint, model, stream, defaultConfig.Region)
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, apiURL.String(), bytes.NewReader(reqBody))
 	if err != nil {
@@ -280,7 +282,7 @@ func (c *awsBedrockAnthropicCompletionStreamClient) makeRequest(ctx context.Cont
 
 // Builds a bedrock api URL from the configured endpoint url.
 // If the endpoint isn't valid, falls back to the default endpoint for the specified fallbackRegion
-func buildApiUrl(endpoint string, model string, stream bool, fallbackRegion string) *url.URL {
+func buildApiUrl(endpoint string, model modelconfigSDK.Model, stream bool, fallbackRegion string) *url.URL {
 	apiURL, err := url.Parse(endpoint)
 	if err != nil || apiURL.Scheme == "" {
 		apiURL = &url.URL{
@@ -289,24 +291,28 @@ func buildApiUrl(endpoint string, model string, stream bool, fallbackRegion stri
 		}
 	}
 
-	bedrockModelRef := conftypes.NewBedrockModelRefFromModelID(model)
+	var awsBedrockModelConfig *modelconfigSDK.AWSBedrockProvisionedThroughput
+	if modelSSConfig := model.ServerSideConfig; modelSSConfig != nil {
+		awsBedrockModelConfig = modelSSConfig.AWSBedrockProvisionedThroughput
+	}
 
-	if bedrockModelRef.ProvisionedCapacity != nil {
+	if awsBedrockModelConfig != nil {
+		provisionedThroughputARN := awsBedrockModelConfig.ARN
 		// We need to Query escape the provisioned capacity ARN, since otherwise
 		// the AWS API Gateway interprets the path as a path and doesn't route
 		// to the Bedrock service. This would results in abstract Coral errors
 		if stream {
-			apiURL.RawPath = fmt.Sprintf("/model/%s/invoke-with-response-stream", url.QueryEscape(*bedrockModelRef.ProvisionedCapacity))
-			apiURL.Path = fmt.Sprintf("/model/%s/invoke-with-response-stream", *bedrockModelRef.ProvisionedCapacity)
+			apiURL.RawPath = fmt.Sprintf("/model/%s/invoke-with-response-stream", url.QueryEscape(provisionedThroughputARN))
+			apiURL.Path = fmt.Sprintf("/model/%s/invoke-with-response-stream", provisionedThroughputARN)
 		} else {
-			apiURL.RawPath = fmt.Sprintf("/model/%s/invoke", url.QueryEscape(*bedrockModelRef.ProvisionedCapacity))
-			apiURL.Path = fmt.Sprintf("/model/%s/invoke", *bedrockModelRef.ProvisionedCapacity)
+			apiURL.RawPath = fmt.Sprintf("/model/%s/invoke", url.QueryEscape(provisionedThroughputARN))
+			apiURL.Path = fmt.Sprintf("/model/%s/invoke", provisionedThroughputARN)
 		}
 	} else {
 		if stream {
-			apiURL.Path = fmt.Sprintf("/model/%s/invoke-with-response-stream", bedrockModelRef.Model)
+			apiURL.Path = fmt.Sprintf("/model/%s/invoke-with-response-stream", model.ModelName)
 		} else {
-			apiURL.Path = fmt.Sprintf("/model/%s/invoke", bedrockModelRef.Model)
+			apiURL.Path = fmt.Sprintf("/model/%s/invoke", model.ModelName)
 		}
 	}
 

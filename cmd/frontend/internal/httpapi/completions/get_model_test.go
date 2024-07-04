@@ -8,66 +8,69 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/sourcegraph/sourcegraph/internal/completions/types"
-	"github.com/sourcegraph/sourcegraph/internal/conf/conftypes"
 	"github.com/sourcegraph/sourcegraph/internal/database/dbmocks"
+
+	modelconfigSDK "github.com/sourcegraph/sourcegraph/internal/modelconfig/types"
 )
 
 // getModelResult is a mock implementation of the getModelFn, one of the parameters
 // to newCompletionsHandler.
 type getModelResult struct {
-	Model string
-	Err   error
+	ModelRef modelconfigSDK.ModelRef
+	Err      error
 }
 
 type mockGetModelFn struct {
 	results []getModelResult
 }
 
-func (m *mockGetModelFn) PushResult(model string, err error) {
+func (m *mockGetModelFn) PushResult(mref modelconfigSDK.ModelRef, err error) {
 	result := getModelResult{
-		Model: model,
-		Err:   err,
+		ModelRef: mref,
+		Err:      err,
 	}
 	m.results = append(m.results, result)
 }
 
-func (m *mockGetModelFn) ToFunc() func(context.Context, types.CodyCompletionRequestParameters, *conftypes.CompletionsConfig) (string, error) {
-	return func(context.Context, types.CodyCompletionRequestParameters, *conftypes.CompletionsConfig) (string, error) {
+func (m *mockGetModelFn) ToFunc() getModelFn {
+	return func(
+		ctx context.Context, requestParams types.CodyCompletionRequestParameters, c *modelconfigSDK.ModelConfiguration) (
+		modelconfigSDK.ModelRef, error) {
 		if len(m.results) == 0 {
 			panic("no call registered to getModels")
 		}
 		v := m.results[0]
 		m.results = m.results[1:]
-		return v.Model, v.Err
+		return v.ModelRef, v.Err
 	}
 }
 
 func TestGetCodeCompletionsModelFn(t *testing.T) {
 	ctx := context.Background()
-
-	validCompletionsConfig := conftypes.CompletionsConfig{
-		ChatModel:       "chat-model-in-config",
-		CompletionModel: "code-model-in-config",
-		FastChatModel:   "fast-chat-model-in-config",
-	}
-
 	getModelFn := getCodeCompletionModelFn()
 
 	t.Run("ErrorUnsupportedModel", func(t *testing.T) {
-
 		reqParams := types.CodyCompletionRequestParameters{
 			CompletionRequestParameters: types.CompletionRequestParameters{
 				Model: "model-the-user-requested",
 			},
 		}
-		_, err := getModelFn(ctx, reqParams, nil /* completionsConfig */)
-		require.ErrorContains(t, err, `unsupported code completion model "model-the-user-requested"`)
+		_, err := getModelFn(ctx, reqParams, nil /* modelconfigSDK.ModelConfiguration */)
+		require.ErrorContains(t, err, "no configuration data supplied")
 
-		_, err2 := getModelFn(ctx, reqParams, &validCompletionsConfig)
+		_, err2 := getModelFn(ctx, reqParams, &modelconfigSDK.ModelConfiguration{})
 		require.ErrorContains(t, err2, `unsupported code completion model "model-the-user-requested"`)
 	})
 
 	t.Run("OverrideSiteConfig", func(t *testing.T) {
+		// Empty model config, except that it does contain the expected model.
+		modelConfig := modelconfigSDK.ModelConfiguration{
+			Models: []modelconfigSDK.Model{
+				{ModelRef: "google::xxxx::some-other-model1"},
+				{ModelRef: "google::xxxx::gemini-pro"},
+				{ModelRef: "google::xxxx::some-other-model2"},
+			},
+		}
 		reqParams := types.CodyCompletionRequestParameters{
 			// BUG: This is inconsistent with how user-requested models work for "chats", which
 			// totally ignore user preferences. Here we _always_ honor the user's preference.
@@ -78,23 +81,36 @@ func TestGetCodeCompletionsModelFn(t *testing.T) {
 				Model: "google/gemini-pro",
 			},
 		}
-		model, err := getModelFn(ctx, reqParams, nil)
+		gotMRef, err := getModelFn(ctx, reqParams, &modelConfig)
 		require.NoError(t, err)
-		assert.Equal(t, "google/gemini-pro", model)
+		assert.EqualValues(t, "google::xxxx::gemini-pro", gotMRef)
 	})
 
 	t.Run("Default", func(t *testing.T) {
 		// For these tests, the Model field in the request body isn't set.
+		// The default Code Completion model should be returned.
 		t.Run("NoSiteConfig", func(t *testing.T) {
 			reqParams := types.CodyCompletionRequestParameters{}
 			_, err := getModelFn(ctx, reqParams, nil)
-			assert.ErrorContains(t, err, "no completions config available")
+			assert.ErrorContains(t, err, "no configuration data supplied")
 		})
 		t.Run("WithSiteConfig", func(t *testing.T) {
+			modelConfig := modelconfigSDK.ModelConfiguration{
+				Models: []modelconfigSDK.Model{
+					{ModelRef: "other-model-1"},
+					{ModelRef: "other-model-2"},
+					{ModelRef: "code-model-in-config"},
+					{ModelRef: "other-model-3"},
+				},
+				DefaultModels: modelconfigSDK.DefaultModels{
+					CodeCompletion: "code-model-in-config",
+				},
+			}
+
 			reqParams := types.CodyCompletionRequestParameters{}
-			model, err := getModelFn(ctx, reqParams, &validCompletionsConfig)
+			model, err := getModelFn(ctx, reqParams, &modelConfig)
 			require.NoError(t, err)
-			assert.Equal(t, "code-model-in-config", model)
+			assert.EqualValues(t, "code-model-in-config", model)
 		})
 	})
 }
@@ -103,52 +119,68 @@ func TestGetChatModelFn(t *testing.T) {
 	ctx := context.Background()
 	mockDB := dbmocks.NewMockDB()
 
-	validCompletionsConfig := conftypes.CompletionsConfig{
-		ChatModel:       "chat-model-in-config",
-		CompletionModel: "code-model-in-config",
-		FastChatModel:   "fast-chat-model-in-config",
-	}
-
-	t.Run("IgnoreRequestUseConfig", func(t *testing.T) {
+	t.Run("CodyEnterprise", func(t *testing.T) {
 		t.Run("Chat", func(t *testing.T) {
 			getModelFn := getChatModelFn(mockDB)
-
-			reqParams := types.CodyCompletionRequestParameters{
-				CompletionRequestParameters: types.CompletionRequestParameters{
-					// For Cody Enterprise, this is totally ignored. Currently, only
-					// Cody Pro users can configure the chat model used.
-					// TODO(PRIME-283): Enable LLM model selection Cody Enterprise users.
-					Model: "model-the-user-requested",
+			modelConfig := modelconfigSDK.ModelConfiguration{
+				Models: []modelconfigSDK.Model{
+					{ModelRef: "some-other-model"},
+					{ModelRef: "model-the-user-requested"},
+				},
+				DefaultModels: modelconfigSDK.DefaultModels{
+					Chat: "default-chat-model",
 				},
 			}
-			model, err := getModelFn(ctx, reqParams, &validCompletionsConfig)
 
-			require.NoError(t, err)
-			assert.Equal(t, "chat-model-in-config", model)
+			t.Run("Found", func(t *testing.T) {
+				reqParams := types.CodyCompletionRequestParameters{
+					CompletionRequestParameters: types.CompletionRequestParameters{
+						Model: "model-the-user-requested",
+					},
+				}
+				model, err := getModelFn(ctx, reqParams, &modelConfig)
+
+				require.NoError(t, err)
+				assert.EqualValues(t, "model-the-user-requested", model)
+			})
+
+			// User requests to use an LLM model not supported by the backend.
+			t.Run("NotFound", func(t *testing.T) {
+				reqParams := types.CodyCompletionRequestParameters{
+					CompletionRequestParameters: types.CompletionRequestParameters{
+						Model: "some-model-not-in-config",
+					},
+				}
+				_, err := getModelFn(ctx, reqParams, &modelConfig)
+				require.ErrorContains(t, err, `unsupported code completion model "some-model-not-in-config"`)
+			})
 		})
 
 		t.Run("FastChat", func(t *testing.T) {
 			getModelFn := getChatModelFn(mockDB)
+			modelConfig := modelconfigSDK.ModelConfiguration{
+				Models: []modelconfigSDK.Model{
+					{ModelRef: "some-other-model"},
+					{ModelRef: "model-the-user-requested"},
+				},
+				DefaultModels: modelconfigSDK.DefaultModels{
+					Chat:     "default-chat-model",
+					FastChat: "default-fastchat-model",
+				},
+			}
 
 			reqParams := types.CodyCompletionRequestParameters{
 				CompletionRequestParameters: types.CompletionRequestParameters{
-					// For Cody Enterprise, this is totally ignored. Currently, only
-					// Cody Pro users can configure the chat model used.
-					// TODO(PRIME-283): Enable LLM model selection Cody Enterprise users.
 					Model: "model-the-user-requested",
 				},
 				// .. but again, for "fast" chats.
 				Fast: true,
 			}
-			compConfig := conftypes.CompletionsConfig{
-				ChatModel:       "chat-model-in-config",
-				CompletionModel: "code-model-in-config",
-				FastChatModel:   "fast-chat-model-in-config",
-			}
-			model, err := getModelFn(ctx, reqParams, &compConfig)
+			model, err := getModelFn(ctx, reqParams, &modelConfig)
 
 			require.NoError(t, err)
-			assert.Equal(t, "fast-chat-model-in-config", model)
+			// We use the FastChat model, regardless of what the user requested.
+			assert.EqualValues(t, "default-fastchat-model", model)
 		})
 	})
 

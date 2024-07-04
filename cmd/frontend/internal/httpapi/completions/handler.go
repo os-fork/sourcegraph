@@ -29,10 +29,10 @@ import (
 	"github.com/sourcegraph/log"
 
 	"github.com/sourcegraph/sourcegraph/cmd/frontend/internal/cody"
+	"github.com/sourcegraph/sourcegraph/cmd/frontend/internal/modelconfig"
 	"github.com/sourcegraph/sourcegraph/internal/completions/client"
 	"github.com/sourcegraph/sourcegraph/internal/completions/types"
 	"github.com/sourcegraph/sourcegraph/internal/conf"
-	"github.com/sourcegraph/sourcegraph/internal/conf/conftypes"
 	streamhttp "github.com/sourcegraph/sourcegraph/internal/search/streaming/http"
 	"github.com/sourcegraph/sourcegraph/internal/telemetry"
 	"github.com/sourcegraph/sourcegraph/internal/trace"
@@ -55,14 +55,12 @@ func newCompletionsHandler(
 	userStore database.UserStore,
 	accessTokenStore database.AccessTokenStore,
 	events *telemetry.EventRecorder,
-	test guardrails.AttributionTest,
+	grAttributionTest guardrails.AttributionTest,
 	feature types.CompletionsFeature,
 	rl RateLimiter,
 	traceFamily string,
 	getModel getModelFn,
 ) http.Handler {
-	responseHandler := newSwitchingResponseHandler(logger, db, feature)
-
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != "POST" {
 			http.Error(w, http.StatusText(http.StatusMethodNotAllowed), http.StatusMethodNotAllowed)
@@ -77,9 +75,9 @@ func newCompletionsHandler(
 			http.Error(w, errResponse, http.StatusUnauthorized)
 			return
 		}
-
-		completionsConfig := conf.GetCompletionsConfig(conf.Get().SiteConfig())
-		if completionsConfig == nil {
+		// We no longer read the CompletionsConfig directly for LLM settings, but we still can use it as a quick
+		// check to see if Cody is even available for this Sourcegraph instance.
+		if conf.GetCompletionsConfig(conf.Get().SiteConfig()) == nil {
 			http.Error(w, "completions are not configured or disabled", http.StatusInternalServerError)
 			return
 		}
@@ -118,79 +116,107 @@ func newCompletionsHandler(
 			return
 		}
 
-		// TODO: Model is not configurable but technically allowed in the request body right now.
-		var err error
-		requestParams.Model, err = getModel(ctx, requestParams, completionsConfig)
-		requestParams.User = completionsConfig.User
-		requestParams.AzureChatModel = completionsConfig.AzureChatModel
-		requestParams.AzureCompletionModel = completionsConfig.AzureCompletionModel
-		requestParams.AzureUseDeprecatedCompletionsAPIForOldModels = completionsConfig.AzureUseDeprecatedCompletionsAPIForOldModels
+		// Load the current LLM model configuration for the Sourcegraph instance. If the site isn't
+		// configured properly or failed to initialize the model config subsystem, this will panic
+		// and result in the HTTP handler serving a 500.
+		modelConfigSvc := modelconfig.Get()
+		currentModelConfig, err := modelConfigSvc.Get()
+		if err != nil {
+			logger.Error("fetching current LLM model configuration", log.Error(err))
+			http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+			return
+		}
+
+		// Load the Provider and Model configuration data. This is surprisingly tricky, because of
+		// various contextual defaults and/or checking the user has access to the model, etc.
+		providerConfig, modelConfig, err := resolveRequestedModel(ctx, currentModelConfig, requestParams, getModel)
 		if err != nil {
 			// NOTE: We return the raw error to the user assuming that it contains relevant
 			// user-facing diagnostic information, and doesn't leak any internal details.
-			logger.Info("error fetching model", log.Error(err))
+			logger.Info("error resolving model", log.Error(err))
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
 
-		ctx, done := Trace(ctx, traceFamily, requestParams.Model, requestParams.MaxTokensToSample).
+		ctx, done := Trace(ctx, traceFamily, modelConfig.ModelName, requestParams.MaxTokensToSample).
 			WithErrorP(&err).
 			WithRequest(r).
 			Build()
 		defer done()
 
-		// Use the user's access token for Cody Gateway on dotcom if PLG is enabled.
-		accessToken := completionsConfig.AccessToken
-		isProviderCodyGateway := completionsConfig.Provider == conftypes.CompletionsProviderNameSourcegraph
-		if isDotcom && isProviderCodyGateway {
-			// Note: if we have no Authorization header, that's fine too, this will return an error
-			apiToken, _, err := authz.ParseAuthorizationHeader(r.Header.Get("Authorization"))
-			if err != nil {
-				// No actor either, so we fail.
+		// Will the current LLM request be sent to Cody Gateway?
+		willBeSentToCodyGateway := providerConfig.ServerSideConfig.SourcegraphProvider == nil
+
+		// dotcomUserTokenForCodyGateway is the Sourcegraph dotcom access token to use for the request
+		// made to Cody Gateway. See the comment on ModelConfigInfo.CodyProUserAccessToken for more info.
+		var dotcomUserTokenForCodyGateway *string
+		if isDotcom {
+			// Confirm the required provider is Cody Gateway. We may later support LLM models that are
+			// not proxied through Cody Gateway. But for now, it is the only case and we are just confirming
+			// things are configured the way we expect.
+			if willBeSentToCodyGateway {
+				logger.Error("dotcom received request that will not be routed to Cody Gateway")
+				http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+				return
+			}
+
+			// For Cody Pro / dotcom, we don't make the API call to Cody Gateway using the Sourcegraph instance's
+			// credentials. For Cody Pro users it will authenticate the request against the end user's dotcom
+			// access token. So we need to fetch this data and make it available when resolving the LLM request.
+			callerAPIToken, _, err := authz.ParseAuthorizationHeader(r.Header.Get("Authorization"))
+			if err == nil {
+				gatewayAccessToken, err := accesstoken.GenerateDotcomUserGatewayAccessToken(callerAPIToken)
+				if err != nil {
+					trace.Logger(ctx, logger).Info("Access token generation failed", log.Error(err))
+					http.Error(w, "Access token generation failed", http.StatusUnauthorized)
+					return
+				}
+				dotcomUserTokenForCodyGateway = &gatewayAccessToken
+			} else {
+				// If there was an error fetching the dotcom user's token from the auth header,
+				// try to just create one some other way.
 				if r.Header.Get("Authorization") != "" || sgactor.FromContext(ctx) == nil {
-					trace.Logger(ctx, logger).Info("Error parsing auth header", log.String("Authorization header", r.Header.Get("Authorization")), log.Error(err))
+					trace.Logger(ctx, logger).Info("Error parsing auth header", log.Error(err))
 					http.Error(w, "Error parsing auth header", http.StatusUnauthorized)
 					return
 				}
 
-				// Get or create an internal token to use.
+				// Get or create an internal token to use, scoped to the calling actor.
 				actor := sgactor.FromContext(ctx)
 				apiTokenSha256, err := accessTokenStore.GetOrCreateInternalToken(ctx, actor.UID, []string{"user:all"})
 				if err != nil {
 					trace.Logger(ctx, logger).Info("Error creating internal access token", log.Error(err))
-					http.Error(w, "Missing auth header", http.StatusUnauthorized)
+					http.Error(w, "Creating access token", http.StatusUnauthorized)
 					return
 				}
 				// Convert the user's sha256-encoded access token to an "sgd_" token for Cody Gateway.
 				// Note: we can't use accesstoken.GenerateDotcomUserGatewayAccessToken here because
 				// we only need to hash this once, not twice, as this is already an SHA256-encoding
 				// of the original token.
-				accessToken = accesstoken.DotcomUserGatewayAccessTokenPrefix + hex.EncodeToString(hashutil.ToSHA256Bytes(apiTokenSha256))
-			} else {
-				accessToken, err = accesstoken.GenerateDotcomUserGatewayAccessToken(apiToken)
-				if err != nil {
-					trace.Logger(ctx, logger).Info("Access token generation failed", log.String("API token", apiToken), log.Error(err))
-					http.Error(w, "Access token generation failed", http.StatusUnauthorized)
-					return
-				}
+				newAccessToken := accesstoken.DotcomUserGatewayAccessTokenPrefix + hex.EncodeToString(hashutil.ToSHA256Bytes(apiTokenSha256))
+				dotcomUserTokenForCodyGateway = &newAccessToken
 			}
 		}
 
+		// Finally! With all the necessary information we can now create the CompletionsClient for
+		// contacting the LLM and responding to the request.
+		modelConfigInfo := types.ModelConfigInfo{
+			Provider:               *providerConfig,
+			Model:                  *modelConfig,
+			CodyProUserAccessToken: dotcomUserTokenForCodyGateway,
+		}
 		completionClient, err := client.Get(
 			logger,
 			events,
-			completionsConfig.Endpoint,
-			completionsConfig.Provider,
-			accessToken,
-		)
+			modelConfigInfo)
 		l := trace.Logger(ctx, logger)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
 
-		if !isDotcom || !isProviderCodyGateway {
-			// Check rate limit.
+		// TODO: This code looks broken as-is.
+		if !isDotcom || !willBeSentToCodyGateway {
 			err = rl.TryAcquire(ctx)
 			if err != nil {
 				if unwrap, ok := err.(RateLimitExceededError); ok {
@@ -217,7 +243,24 @@ func newCompletionsHandler(
 			}
 		}
 
-		responseHandler(ctx, requestParams.CompletionRequestParameters, version, completionClient, w, userStore, test)
+		// Finally serve the request.
+		fullCompletionRequest := types.CompletionRequest{
+			Feature:         feature,
+			Version:         version,
+			ModelConfigInfo: modelConfigInfo,
+			Parameters:      requestParams.CompletionRequestParameters,
+		}
+		if requestParams.IsStream(feature) {
+			serveStreamingResponse(
+				w,
+				ctx, db, logger,
+				fullCompletionRequest, completionClient, grAttributionTest)
+		} else {
+			serveSyncResponse(
+				w,
+				ctx, db, logger,
+				fullCompletionRequest, completionClient, grAttributionTest)
+		}
 	})
 }
 
@@ -236,178 +279,161 @@ func respondRateLimited(w http.ResponseWriter, err RateLimitExceededError, isDot
 	http.Error(w, err.Error(), http.StatusTooManyRequests)
 }
 
-// newSwitchingResponseHandler handles requests to an LLM provider, and wraps the correct
-// handler based on the requestParams.Stream flag.
-func newSwitchingResponseHandler(logger log.Logger, db database.DB, feature types.CompletionsFeature) func(ctx context.Context, requestParams types.CompletionRequestParameters, version types.CompletionsVersion, cc types.CompletionsClient, w http.ResponseWriter, userStore database.UserStore, test guardrails.AttributionTest) {
-	nonStreamer := newNonStreamingResponseHandler(logger, db, feature)
-	streamer := newStreamingResponseHandler(logger, db, feature)
-	return func(ctx context.Context, requestParams types.CompletionRequestParameters, version types.CompletionsVersion, cc types.CompletionsClient, w http.ResponseWriter, userStore database.UserStore, test guardrails.AttributionTest) {
-		if requestParams.IsStream(feature) {
-			streamer(ctx, requestParams, version, cc, w, userStore, test)
-		} else {
-			// TODO(#59832): Add attribution to non-streaming endpoint.
-			nonStreamer(ctx, requestParams, version, cc, w, userStore)
-		}
-	}
-}
-
 // newStreamingResponseHandler handles streaming requests to an LLM provider,
 // It writes events to an SSE stream as they come in.
-func newStreamingResponseHandler(logger log.Logger, db database.DB, feature types.CompletionsFeature) func(ctx context.Context, requestParams types.CompletionRequestParameters, version types.CompletionsVersion, cc types.CompletionsClient, w http.ResponseWriter, userStore database.UserStore, test guardrails.AttributionTest) {
-	return func(ctx context.Context, requestParams types.CompletionRequestParameters, version types.CompletionsVersion, cc types.CompletionsClient, w http.ResponseWriter, userStore database.UserStore, test guardrails.AttributionTest) {
-		var eventWriter = sync.OnceValue[*streamhttp.Writer](func() *streamhttp.Writer {
-			// NOTE: The HTTP response defaults to 200 if not set explicitly before writing the response.
-			// This means that this function will never serve a non-OK response. (Which makes sense, since
-			// we don't know ahead of time if some later SSE event will fail.
-			eventWriter, err := streamhttp.NewWriter(w)
-			if err != nil {
-				http.Error(w, err.Error(), http.StatusInternalServerError)
-				return nil
-			}
-			return eventWriter
-		})
-
-		// Isolate writing events.
-		var mu sync.Mutex
-		writeEvent := func(name string, data any) (err error) {
-			// Attribution search is currently panicing. The main hypothesis
-			// is calling writeEvent on a finished request in the case of an
-			// error. Rather than panicing the whole process we convert it
-			// into an error which will get logged.
-			//
-			// https://github.com/sourcegraph/sourcegraph/issues/60439
-			defer func() {
-				if rec := recover(); rec != nil {
-					err = errors.WithStack(errors.Errorf("recovered panic in completions writeEvent: %v", rec))
-				}
-			}()
-
-			mu.Lock()
-			defer mu.Unlock()
-			if ev := eventWriter(); ev != nil {
-				return ev.Event(name, data)
-			}
+func serveStreamingResponse(
+	w http.ResponseWriter,
+	ctx context.Context, db database.DB, logger log.Logger,
+	compRequest types.CompletionRequest, cc types.CompletionsClient, test guardrails.AttributionTest) {
+	var eventWriter = sync.OnceValue[*streamhttp.Writer](func() *streamhttp.Writer {
+		// NOTE: The HTTP response defaults to 200 if not set explicitly before writing the response.
+		// This means that this function will never serve a non-OK response. (Which makes sense, since
+		// we don't know ahead of time if some later SSE event will fail.
+		eventWriter, err := streamhttp.NewWriter(w)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return nil
 		}
+		return eventWriter
+	})
 
-		// Always send a final done event so clients know the stream is shutting down.
-		firstEventObserved := false
+	// Isolate writing events.
+	var mu sync.Mutex
+	writeEvent := func(name string, data any) (err error) {
+		// Attribution search is currently panicing. The main hypothesis
+		// is calling writeEvent on a finished request in the case of an
+		// error. Rather than panicing the whole process we convert it
+		// into an error which will get logged.
+		//
+		// https://github.com/sourcegraph/sourcegraph/issues/60439
 		defer func() {
-			if firstEventObserved {
-				_ = writeEvent("done", map[string]any{})
+			if rec := recover(); rec != nil {
+				err = errors.WithStack(errors.Errorf("recovered panic in completions writeEvent: %v", rec))
 			}
 		}()
-		start := time.Now()
-		eventSink := func(e types.CompletionResponse) error {
-			return writeEvent("completion", e)
+
+		mu.Lock()
+		defer mu.Unlock()
+		if ev := eventWriter(); ev != nil {
+			return ev.Event(name, data)
 		}
-		attributionErrorLog := func(err error) {
-			l := trace.Logger(ctx, logger)
-			if err := writeEvent("attribution-error", map[string]string{"error": err.Error()}); err != nil {
-				l.Error("error reporting attribution error", log.Error(err))
-			} else {
-				return
-			}
-			l.Error("attribution error", log.Error(err))
+		return nil
+	}
+
+	// Always send a final done event so clients know the stream is shutting down.
+	firstEventObserved := false
+	defer func() {
+		if firstEventObserved {
+			_ = writeEvent("done", map[string]any{})
 		}
-		f := guardrails.NoopCompletionsFilter(eventSink)
-		if cf := conf.GetConfigFeatures(conf.SiteConfig()); cf != nil && cf.Attribution &&
-			featureflag.FromContext(ctx).GetBoolOr("autocomplete-attribution", true) {
-			factory := guardrails.NewCompletionsFilter
-			// TODO(#61828) - Validate & cleanup:
-			// 1.  If experiments are successful on S2 and we do not see any panics,
-			//     please switch the feature flag default value to true.
-			// 2.  Afterwards cleanup the implementation and only use V2 completion filter.
-			//     Remove v1 implementation completely.
-			if featureflag.FromContext(ctx).GetBoolOr("autocomplete-attribution-v2", false) {
-				factory = guardrails.NewCompletionsFilter2
-			}
-			ff, err := factory(guardrails.CompletionsFilterConfig{
-				Sink:             eventSink,
-				Test:             test,
-				AttributionError: attributionErrorLog,
-			})
-			if err != nil {
-				attributionErrorLog(err)
-			} else {
-				f = ff
-			}
-		}
-
-		// Build and send the completions request.
-		compReq := types.CompletionRequest{
-			Feature:    feature,
-			Version:    version,
-			Parameters: requestParams,
-		}
-		sendEventFn := func(event types.CompletionResponse) error {
-			if !firstEventObserved {
-				firstEventObserved = true
-				timeToFirstEventMetrics.Observe(time.Since(start).Seconds(), 1, nil, requestParams.Model)
-			}
-			return f.Send(ctx, event)
-		}
-		err := cc.Stream(ctx, logger, compReq, sendEventFn)
-		if err != nil {
-			l := trace.Logger(ctx, logger)
-
-			logFields := []log.Field{log.Error(err)}
-			if errNotOK, ok := types.IsErrStatusNotOK(err); ok {
-				if !firstEventObserved && errNotOK.StatusCode == http.StatusTooManyRequests {
-					actor := sgactor.FromContext(ctx)
-					user, err := actor.User(ctx, userStore)
-					if err != nil {
-						l.Error("Error while fetching user", log.Error(err))
-						http.Error(w, "Internal server error", http.StatusInternalServerError)
-						return
-					}
-
-					subscription, err := cody.SubscriptionForUser(ctx, db, *user)
-					if err != nil {
-						l.Error("Error while fetching user's cody subscription", log.Error(err))
-						http.Error(w, "Internal server error", http.StatusInternalServerError)
-						return
-					}
-
-					isDotcom := dotcom.SourcegraphDotComMode()
-					if isDotcom {
-						if subscription.ApplyProRateLimits {
-							w.Header().Set("x-is-cody-pro-user", "true")
-						} else {
-							w.Header().Set("x-is-cody-pro-user", "false")
-						}
-					}
-					errNotOK.WriteHeader(w)
-					return
-
-				}
-				if tc := errNotOK.SourceTraceContext; tc != nil {
-					logFields = append(logFields,
-						log.String("sourceTraceContext.traceID", tc.TraceID),
-						log.String("sourceTraceContext.spanID", tc.SpanID))
-				}
-			}
-			l.Error("error while streaming completions", logFields...)
-
-			// Note that we do NOT attempt to forward the status code to the
-			// client here, since we are using streamhttp.Writer - see
-			// streamhttp.NewWriter for more details. Instead, we send an error
-			// event, which clients should check as appropriate.
-			if !firstEventObserved {
-				firstEventObserved = true
-				timeToFirstEventMetrics.Observe(time.Since(start).Seconds(), 1, nil, requestParams.Model)
-			}
-			if err := writeEvent("error", map[string]string{"error": err.Error()}); err != nil {
-				l.Error("error reporting streaming completion error", log.Error(err))
-			}
+	}()
+	start := time.Now()
+	eventSink := func(e types.CompletionResponse) error {
+		return writeEvent("completion", e)
+	}
+	attributionErrorLog := func(err error) {
+		l := trace.Logger(ctx, logger)
+		if err := writeEvent("attribution-error", map[string]string{"error": err.Error()}); err != nil {
+			l.Error("error reporting attribution error", log.Error(err))
+		} else {
 			return
 		}
-		if f != nil { // if autocomplete-attribution enabled
-			if err := f.WaitDone(ctx); err != nil {
-				l := trace.Logger(ctx, logger)
-				if err := writeEvent("error", map[string]string{"error": err.Error()}); err != nil {
-					l.Error("error reporting streaming completion error", log.Error(err))
+		l.Error("attribution error", log.Error(err))
+	}
+	f := guardrails.NoopCompletionsFilter(eventSink)
+	if cf := conf.GetConfigFeatures(conf.SiteConfig()); cf != nil && cf.Attribution &&
+		featureflag.FromContext(ctx).GetBoolOr("autocomplete-attribution", true) {
+		factory := guardrails.NewCompletionsFilter
+		// TODO(#61828) - Validate & cleanup:
+		// 1.  If experiments are successful on S2 and we do not see any panics,
+		//     please switch the feature flag default value to true.
+		// 2.  Afterwards cleanup the implementation and only use V2 completion filter.
+		//     Remove v1 implementation completely.
+		if featureflag.FromContext(ctx).GetBoolOr("autocomplete-attribution-v2", false) {
+			factory = guardrails.NewCompletionsFilter2
+		}
+		ff, err := factory(guardrails.CompletionsFilterConfig{
+			Sink:             eventSink,
+			Test:             test,
+			AttributionError: attributionErrorLog,
+		})
+		if err != nil {
+			attributionErrorLog(err)
+		} else {
+			f = ff
+		}
+	}
+
+	// Build and send the completions request.
+	modelName := compRequest.ModelConfigInfo.Model.ModelName
+	sendEventFn := func(event types.CompletionResponse) error {
+		if !firstEventObserved {
+			firstEventObserved = true
+			timeToFirstEventMetrics.Observe(time.Since(start).Seconds(), 1, nil, modelName)
+		}
+		return f.Send(ctx, event)
+	}
+	err := cc.Stream(ctx, logger, compRequest, sendEventFn)
+	if err != nil {
+		l := trace.Logger(ctx, logger)
+
+		logFields := []log.Field{log.Error(err)}
+		if errNotOK, ok := types.IsErrStatusNotOK(err); ok {
+			if !firstEventObserved && errNotOK.StatusCode == http.StatusTooManyRequests {
+				actor := sgactor.FromContext(ctx)
+				user, err := actor.User(ctx, db.Users())
+				if err != nil {
+					l.Error("Error while fetching user", log.Error(err))
+					http.Error(w, "Internal server error", http.StatusInternalServerError)
+					return
 				}
+
+				subscription, err := cody.SubscriptionForUser(ctx, db, *user)
+				if err != nil {
+					l.Error("Error while fetching user's cody subscription", log.Error(err))
+					http.Error(w, "Internal server error", http.StatusInternalServerError)
+					return
+				}
+
+				isDotcom := dotcom.SourcegraphDotComMode()
+				if isDotcom {
+					if subscription.ApplyProRateLimits {
+						w.Header().Set("x-is-cody-pro-user", "true")
+					} else {
+						w.Header().Set("x-is-cody-pro-user", "false")
+					}
+				}
+				errNotOK.WriteHeader(w)
+				return
+
+			}
+			if tc := errNotOK.SourceTraceContext; tc != nil {
+				logFields = append(logFields,
+					log.String("sourceTraceContext.traceID", tc.TraceID),
+					log.String("sourceTraceContext.spanID", tc.SpanID))
+			}
+		}
+		l.Error("error while streaming completions", logFields...)
+
+		// Note that we do NOT attempt to forward the status code to the
+		// client here, since we are using streamhttp.Writer - see
+		// streamhttp.NewWriter for more details. Instead, we send an error
+		// event, which clients should check as appropriate.
+		if !firstEventObserved {
+			firstEventObserved = true
+			modelName := compRequest.ModelConfigInfo.Model.ModelName
+			timeToFirstEventMetrics.Observe(time.Since(start).Seconds(), 1, nil, modelName)
+		}
+		if err := writeEvent("error", map[string]string{"error": err.Error()}); err != nil {
+			l.Error("error reporting streaming completion error", log.Error(err))
+		}
+		return
+	}
+	if f != nil { // if autocomplete-attribution enabled
+		if err := f.WaitDone(ctx); err != nil {
+			l := trace.Logger(ctx, logger)
+			if err := writeEvent("error", map[string]string{"error": err.Error()}); err != nil {
+				l.Error("error reporting streaming completion error", log.Error(err))
 			}
 		}
 	}
@@ -416,72 +442,69 @@ func newStreamingResponseHandler(logger log.Logger, db database.DB, feature type
 // newNonStreamingResponseHandler handles non-streaming requests to an LLM provider,
 // awaiting the complete response before writing it back in a structured JSON response
 // to the client.
-func newNonStreamingResponseHandler(logger log.Logger, db database.DB, feature types.CompletionsFeature) func(ctx context.Context, requestParams types.CompletionRequestParameters, version types.CompletionsVersion, cc types.CompletionsClient, w http.ResponseWriter, userStore database.UserStore) {
-	return func(ctx context.Context, requestParams types.CompletionRequestParameters, version types.CompletionsVersion, cc types.CompletionsClient, w http.ResponseWriter, userStore database.UserStore) {
-		compRequest := types.CompletionRequest{
-			Feature:    feature,
-			Version:    version,
-			Parameters: requestParams,
-		}
-		completion, err := cc.Complete(ctx, logger, compRequest)
-		if err != nil {
-			logFields := []log.Field{log.Error(err)}
+func serveSyncResponse(
+	w http.ResponseWriter,
+	ctx context.Context, db database.DB, logger log.Logger,
+	compRequest types.CompletionRequest, cc types.CompletionsClient, test guardrails.AttributionTest) {
 
-			// Propagate the upstream headers to the client if available.
-			if errNotOK, ok := types.IsErrStatusNotOK(err); ok {
-				errNotOK.WriteHeader(w)
+	completion, err := cc.Complete(ctx, logger, compRequest)
+	if err != nil {
+		logFields := []log.Field{log.Error(err)}
 
-				if errNotOK.StatusCode == http.StatusTooManyRequests {
-					actor := sgactor.FromContext(ctx)
-					user, err := actor.User(ctx, userStore)
-					if err != nil {
-						logger.Error("Error while fetching user", log.Error(err))
-						http.Error(w, "Internal server error", http.StatusInternalServerError)
-						return
-					}
-					subscription, err := cody.SubscriptionForUser(ctx, db, *user)
-					if err != nil {
-						logger.Error("Error while fetching user's cody subscription", log.Error(err))
-						http.Error(w, "Internal server error", http.StatusInternalServerError)
-						return
-					}
+		// Propagate the upstream headers to the client if available.
+		if errNotOK, ok := types.IsErrStatusNotOK(err); ok {
+			errNotOK.WriteHeader(w)
 
-					isDotcom := dotcom.SourcegraphDotComMode()
-					if isDotcom {
-						if subscription.ApplyProRateLimits {
-							w.Header().Set("x-is-cody-pro-user", "true")
-						} else {
-							w.Header().Set("x-is-cody-pro-user", "false")
-						}
-					}
+			if errNotOK.StatusCode == http.StatusTooManyRequests {
+				actor := sgactor.FromContext(ctx)
+				user, err := actor.User(ctx, db.Users())
+				if err != nil {
+					logger.Error("Error while fetching user", log.Error(err))
+					http.Error(w, "Internal server error", http.StatusInternalServerError)
 					return
-
+				}
+				subscription, err := cody.SubscriptionForUser(ctx, db, *user)
+				if err != nil {
+					logger.Error("Error while fetching user's cody subscription", log.Error(err))
+					http.Error(w, "Internal server error", http.StatusInternalServerError)
+					return
 				}
 
-				if tc := errNotOK.SourceTraceContext; tc != nil {
-					logFields = append(logFields,
-						log.String("sourceTraceContext.traceID", tc.TraceID),
-						log.String("sourceTraceContext.spanID", tc.SpanID))
+				isDotcom := dotcom.SourcegraphDotComMode()
+				if isDotcom {
+					if subscription.ApplyProRateLimits {
+						w.Header().Set("x-is-cody-pro-user", "true")
+					} else {
+						w.Header().Set("x-is-cody-pro-user", "false")
+					}
 				}
-			} else {
-				w.WriteHeader(http.StatusInternalServerError)
-			}
-			_, err = w.Write([]byte(err.Error()))
-			if err != nil {
-				logger.Error("failed to write", log.Error(err))
+				return
+
 			}
 
-			trace.Logger(ctx, logger).Error("error on completion", logFields...)
-			return
+			if tc := errNotOK.SourceTraceContext; tc != nil {
+				logFields = append(logFields,
+					log.String("sourceTraceContext.traceID", tc.TraceID),
+					log.String("sourceTraceContext.spanID", tc.SpanID))
+			}
+		} else {
+			w.WriteHeader(http.StatusInternalServerError)
 		}
-
-		completionBytes, err := json.Marshal(completion)
+		_, err = w.Write([]byte(err.Error()))
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
+			logger.Error("failed to write", log.Error(err))
 		}
-		_, _ = w.Write(completionBytes)
+
+		trace.Logger(ctx, logger).Error("error on completion", logFields...)
+		return
 	}
+
+	completionBytes, err := json.Marshal(completion)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	_, _ = w.Write(completionBytes)
 }
 
 type codyIgnoreCompatibilityError struct {

@@ -37,8 +37,6 @@ func (c *openAIChatCompletionStreamClient) Complete(
 	ctx context.Context,
 	logger log.Logger,
 	request types.CompletionRequest) (*types.CompletionResponse, error) {
-	feature := request.Feature
-	requestParams := request.Parameters
 
 	var resp *http.Response
 	var err error
@@ -48,10 +46,13 @@ func (c *openAIChatCompletionStreamClient) Complete(
 		}
 	})()
 
-	if feature == types.CompletionsFeatureCode {
-		resp, err = c.makeCompletionRequest(ctx, requestParams, false)
-	} else {
-		resp, err = c.makeRequest(ctx, requestParams, false)
+	switch request.Feature {
+	case types.CompletionsFeatureCode:
+		resp, err = c.makeCompletionRequest(ctx, request, false)
+	case types.CompletionsFeatureChat:
+		resp, err = c.makeRequest(ctx, request, false)
+	default:
+		return nil, errors.Errorf("unrecognized completions feature %q", request.Feature)
 	}
 	if err != nil {
 		return nil, err
@@ -67,11 +68,13 @@ func (c *openAIChatCompletionStreamClient) Complete(
 		// Empty response.
 		return &types.CompletionResponse{}, nil
 	}
+
+	modelName := request.ModelConfigInfo.Model.ModelName
 	err = c.tokenManager.UpdateTokenCountsFromModelUsage(
 		response.Usage.PromptTokens,
 		response.Usage.CompletionTokens,
-		tokenizer.OpenAIModel+"/"+requestParams.Model,
-		string(feature),
+		tokenizer.OpenAIModel+"/"+modelName,
+		string(request.Feature),
 		tokenusage.OpenAI)
 	if err != nil {
 		logger.Warn("Failed to count tokens with the token manager %w ", log.Error(err))
@@ -88,7 +91,6 @@ func (c *openAIChatCompletionStreamClient) Stream(
 	request types.CompletionRequest,
 	sendEvent types.SendCompletionEvent) error {
 	feature := request.Feature
-	requestParams := request.Parameters
 
 	var resp *http.Response
 	var err error
@@ -99,9 +101,9 @@ func (c *openAIChatCompletionStreamClient) Stream(
 		}
 	})()
 	if feature == types.CompletionsFeatureCode {
-		resp, err = c.makeCompletionRequest(ctx, requestParams, true)
+		resp, err = c.makeCompletionRequest(ctx, request, true)
 	} else {
-		resp, err = c.makeRequest(ctx, requestParams, true)
+		resp, err = c.makeRequest(ctx, request, true)
 	}
 	if err != nil {
 		return err
@@ -154,7 +156,9 @@ func (c *openAIChatCompletionStreamClient) Stream(
 	if dec.Err() != nil {
 		return dec.Err()
 	}
-	err = c.tokenManager.UpdateTokenCountsFromModelUsage(promptTokens, completionTokens, tokenizer.OpenAIModel+"/"+requestParams.Model, string(feature), tokenusage.OpenAI)
+	modelName := request.ModelConfigInfo.Model.ModelName
+	err = c.tokenManager.UpdateTokenCountsFromModelUsage(
+		promptTokens, completionTokens, tokenizer.OpenAIModel+"/"+modelName, string(feature), tokenusage.OpenAI)
 	if err != nil {
 		logger.Warn("Failed to count tokens with the token manager %w", log.Error(err))
 	}
@@ -162,7 +166,8 @@ func (c *openAIChatCompletionStreamClient) Stream(
 }
 
 // makeRequest formats the request and calls the chat/completions endpoint for code_completion requests
-func (c *openAIChatCompletionStreamClient) makeRequest(ctx context.Context, requestParams types.CompletionRequestParameters, stream bool) (*http.Response, error) {
+func (c *openAIChatCompletionStreamClient) makeRequest(ctx context.Context, request types.CompletionRequest, stream bool) (*http.Response, error) {
+	requestParams := request.Parameters
 	if requestParams.TopK < 0 {
 		requestParams.TopK = 0
 	}
@@ -170,12 +175,13 @@ func (c *openAIChatCompletionStreamClient) makeRequest(ctx context.Context, requ
 		requestParams.TopP = 0
 	}
 
-	// TODO(sqs): make CompletionRequestParameters non-anthropic-specific
+	// TODO(sqs): make CompletionRequestParameters non-anthropic-specific.
+	modelName := request.ModelConfigInfo.Model.ModelName
 	payload := openAIChatCompletionsRequestParameters{
-		Model:       requestParams.Model,
+		Model:       modelName,
 		Temperature: requestParams.Temperature,
 		TopP:        requestParams.TopP,
-		// TODO(sqs): map requestParams.TopK to openai
+		// TODO(sqs): map requestParams.TopK to openai.
 		N:         1,
 		Stream:    stream,
 		MaxTokens: requestParams.MaxTokensToSample,
@@ -234,7 +240,9 @@ func (c *openAIChatCompletionStreamClient) makeRequest(ctx context.Context, requ
 }
 
 // makeCompletionRequest formats the request and calls the completions endpoint for code_completion requests
-func (c *openAIChatCompletionStreamClient) makeCompletionRequest(ctx context.Context, requestParams types.CompletionRequestParameters, stream bool) (*http.Response, error) {
+func (c *openAIChatCompletionStreamClient) makeCompletionRequest(
+	ctx context.Context, request types.CompletionRequest, stream bool) (*http.Response, error) {
+	requestParams := request.Parameters
 	if requestParams.TopK < 0 {
 		requestParams.TopK = 0
 	}
@@ -247,8 +255,9 @@ func (c *openAIChatCompletionStreamClient) makeCompletionRequest(ctx context.Con
 		return nil, err
 	}
 
+	modelName := request.ModelConfigInfo.Model.ModelName
 	payload := openAICompletionsRequestParameters{
-		Model:       requestParams.Model,
+		Model:       modelName,
 		Temperature: requestParams.Temperature,
 		TopP:        requestParams.TopP,
 		N:           1,

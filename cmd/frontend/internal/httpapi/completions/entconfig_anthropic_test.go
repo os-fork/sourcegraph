@@ -5,7 +5,9 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
+	"github.com/sourcegraph/sourcegraph/cmd/frontend/internal/modelconfig"
 	"github.com/sourcegraph/sourcegraph/internal/completions/types"
 	"github.com/sourcegraph/sourcegraph/lib/pointers"
 	"github.com/sourcegraph/sourcegraph/schema"
@@ -46,7 +48,7 @@ func testAPIProviderAnthropic(t *testing.T, infra *apiProviderTestInfra) {
 		// Anthropic-specific request object we expect to see sent to Cody Gateway.
 		// See `anthropicRequestParameters`.
 		outboundAnthropicRequest := map[string]any{
-			"model": "claude-2.0",
+			"model": "claude-3-sonnet-20240229",
 			"messages": []map[string]any{
 				{
 					"role": "user",
@@ -86,7 +88,7 @@ func testAPIProviderAnthropic(t *testing.T, infra *apiProviderTestInfra) {
 	}
 
 	t.Run("WithDefaultConfig", func(t *testing.T) {
-		infra.SetSiteConfig(schema.SiteConfiguration{
+		infra.SetSiteConfig(t, schema.SiteConfiguration{
 			CodyEnabled:                  pointers.Ptr(true),
 			CodyPermissions:              pointers.Ptr(false),
 			CodyRestrictUsersFeatureFlag: pointers.Ptr(false),
@@ -98,13 +100,46 @@ func testAPIProviderAnthropic(t *testing.T, infra *apiProviderTestInfra) {
 			Completions: nil,
 		})
 
+		t.Run("VerifyModelConfig", func(t *testing.T) {
+			// After setting the site configuration, confirm that the current model configuration
+			// data is what we expect it to be. Since otherwise the following tests will fail.
+			modelconfigSvc := modelconfig.Get()
+			modelconfig, err := modelconfigSvc.Get()
+			require.NoError(t, err)
+
+			var foundAnthropicProvider bool
+			for _, provider := range modelconfig.Providers {
+				if string(provider.ID) == "anthropic" {
+					foundAnthropicProvider = true
+					require.NotNil(t, provider.ServerSideConfig)
+					require.NotNil(t, provider.ServerSideConfig.SourcegraphProvider)
+					break
+				}
+			}
+			require.True(t, foundAnthropicProvider)
+
+			assertKnownModel := func(mref string) {
+				for _, model := range modelconfig.Models {
+					if string(model.ModelRef) == mref {
+						return
+					}
+				}
+				assert.Failf(t, "mref %q not found in modelconfig. Have %+v", mref, modelconfig.Models)
+			}
+			// These models are the default ones that are specified in the site config if no explicit
+			// models are defined by the Sourcegraph admin.
+			assertKnownModel("fireworks::unknown::starcoder")
+			assertKnownModel("anthropic::unknown::claude-3-haiku-20240307")
+			assertKnownModel("anthropic::unknown::claude-3-sonnet-20240229")
+		})
+
 		// Confirm that the default configuration `Completions: nil` will use
 		// Cody Gateway as the LLM API Provider for the Anthropic models.
 		t.Run("ViaCodyGateway", func(t *testing.T) {
 			// The Model isn't included in the CompletionRequestParameters, so we have the getModelFn callback
 			// return claude-2. The Site Configuration will then route this to Cody Gateway (and not BYOK Anthropic),
 			// and we sanity check the request to Cody Gateway matches what is expected, and we serve a valid response.
-			infra.PushGetModelResult("anthropic/claude-2", nil)
+			infra.PushGetModelResult("anthropic::unknown::claude-3-sonnet-20240229", nil)
 
 			// Generate some basic test data and confirm that the completions handler
 			// code works as expected.
@@ -134,11 +169,11 @@ func testAPIProviderAnthropic(t *testing.T, infra *apiProviderTestInfra) {
 		const (
 			anthropicAPIKeyInConfig      = "secret-api-key"
 			anthropicAPIEndpointInConfig = "https://byok.anthropic.com/path/from/config"
-			chatModelInConfig            = "anthropic/claude-3-opus"
-			codeModelInConfig            = "anthropic/claude-3-haiku"
+			chatModelInConfig            = "anthropic/custom-model-name_chat"
+			codeModelInConfig            = "anthropic/custom-model-name_code"
 		)
 
-		infra.SetSiteConfig(schema.SiteConfiguration{
+		infra.SetSiteConfig(t, schema.SiteConfiguration{
 			CodyEnabled:                  pointers.Ptr(true),
 			CodyPermissions:              pointers.Ptr(false),
 			CodyRestrictUsersFeatureFlag: pointers.Ptr(false),
@@ -159,7 +194,7 @@ func testAPIProviderAnthropic(t *testing.T, infra *apiProviderTestInfra) {
 			// Start with the stock test data, but customize it to reflect
 			// what we expect to see based on the site configuration.
 			testData := getValidTestData()
-			testData.OutboundAnthropicRequest["model"] = "anthropic/claude-3-opus"
+			testData.OutboundAnthropicRequest["model"] = "custom-model-name_chat"
 
 			// Register our hook to verify Cody Gateway got called with
 			// the requested data.
@@ -174,7 +209,10 @@ func testAPIProviderAnthropic(t *testing.T, infra *apiProviderTestInfra) {
 					},
 				})
 
-			infra.PushGetModelResult(chatModelInConfig, nil)
+			// The model name in the site config is the older style, "anthropic/custom-model-name_chat". But
+			// the value that comes out of the getModelFn is the ModelRef, which when we load the site configuration
+			// data uses "unknown" for the API Version ID.
+			infra.PushGetModelResult("anthropic::unknown::custom-model-name_chat", nil)
 			status, responseBody := infra.CallChatCompletionAPI(t, testData.InitialCompletionRequest)
 
 			assert.Equal(t, http.StatusOK, status)

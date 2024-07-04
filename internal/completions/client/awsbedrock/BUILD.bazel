@@ -13,8 +13,8 @@ go_library(
     deps = [
         "//internal/completions/tokenusage",
         "//internal/completions/types",
-        "//internal/conf/conftypes",
         "//internal/httpcli",
+        "//internal/modelconfig/types",
         "//lib/errors",
         "@com_github_aws_aws_sdk_go_v2//aws",
         "@com_github_aws_aws_sdk_go_v2//aws/signer/v4:signer",

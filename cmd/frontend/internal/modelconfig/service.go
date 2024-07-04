@@ -3,7 +3,9 @@ package modelconfig
 import (
 	"sync"
 
+	"github.com/sourcegraph/sourcegraph/internal/conf"
 	"github.com/sourcegraph/sourcegraph/internal/modelconfig/types"
+	"github.com/sourcegraph/sourcegraph/lib/errors"
 )
 
 // Service is the system-wide component for obtaining the set of
@@ -39,12 +41,72 @@ func Get() Service {
 	return singletonConfigService
 }
 
+func InitMock() error {
+	// If the singletons ervice has already been initialized, fail if it wasn't
+	// already done by another unit test. We don't want to mix tests and "real"
+	// behaviors.
+	if singletonConfigService != nil && !singletonConfigService.inTestMode {
+		return errors.New("service already initialized via Init")
+	}
+	if singletonConfigService == nil {
+		singletonConfigService = &service{
+			inTestMode: true,
+		}
+	}
+	return nil
+}
+
+// ResetMock will reset the mock modelconfig service to pick up any recent
+// site config changes.
+func ResetMock() error {
+	if singletonConfigService == nil {
+		return errors.New("service not configured, call InitMock")
+	}
+	if !singletonConfigService.inTestMode {
+		return errors.New("service not in test mode, refusing to reset mock")
+	}
+
+	// Looks like all is well. So we rebuild the model configuration.
+	// We do not take static config or Cody Gateway config into account because
+	// it would just lead to indeterminism in tests.
+	siteConfig := conf.Get().SiteConfiguration
+
+	// TODO(chrsmith): Load the newer form of LLM model configuration data. For now, we just
+	// load the older-stype completions configuration data if available.
+	var (
+		siteModelConfig *types.SiteModelConfiguration
+		err             error
+	)
+	if compConfig := conf.GetCompletionsConfig(siteConfig); compConfig != nil {
+		siteModelConfig, err = convertCompletionsConfig(compConfig)
+		if err != nil {
+			return errors.Wrap(err, "converting completion config")
+		}
+	}
+
+	b := builder{
+		staticData:      nil,
+		codyGatewayData: nil,
+		siteConfigData:  siteModelConfig,
+	}
+	newConfig, err := b.build()
+	if err != nil {
+		return errors.Wrap(err, "building modelconfig")
+	}
+	singletonConfigService.set(newConfig)
+	return nil
+}
+
 // service implements the Service interface, and exposes a thread-safe `set` method
 // for updating the current configuration.
 type service struct {
 	// currentConfig is the "source of truth" for this Sg instance's model configuration.
 	currentConfig   *types.ModelConfiguration
 	currentConfigMu sync.RWMutex
+
+	// inTestMode is set IFF the singleton config service was initialized via a call
+	// to InitMock, and allows certain operations to help testing.
+	inTestMode bool
 }
 
 func (svc *service) Get() (*types.ModelConfiguration, error) {

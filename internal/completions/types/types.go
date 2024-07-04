@@ -10,6 +10,8 @@ import (
 	"github.com/sourcegraph/log"
 
 	"github.com/sourcegraph/sourcegraph/lib/errors"
+
+	modelconfig "github.com/sourcegraph/sourcegraph/internal/modelconfig/types"
 )
 
 const HUMAN_MESSAGE_SPEAKER = "human"
@@ -51,24 +53,33 @@ type CodyCompletionRequestParameters struct {
 	Fast bool
 }
 
+// TaintedModelRef is a ModelRef that came from the Cody client, and therefore has no
+// guarantee if it is in the older format of "PROVIDER/MODEL" or the newer ModelRef
+// format "PROVIDER::API-VERSION::MODEL".
+//
+// You MUST NOT blindly cast this to a modelconfigSDK.ModelRef, as it will certainly
+// cause failures at runtime. Instead, it must be inspected and carefully parsed.
+type TaintedModelRef string
+
 type CompletionRequestParameters struct {
+	// This should NOT be used. It is here to be part of the incomming HTTP request,
+	// but the actual LLM model that should be used when _serving_ the request is defined
+	// by the ModelConfigInfo.Model, and not what the user specified.
+	Model TaintedModelRef
+
+	Messages          []Message `json:"messages"`
+	MaxTokensToSample int       `json:"maxTokensToSample,omitempty"`
+	Temperature       float32   `json:"temperature,omitempty"`
+	StopSequences     []string  `json:"stopSequences,omitempty"`
+	TopK              int       `json:"topK,omitempty"`
+	TopP              float32   `json:"topP,omitempty"`
+	Stream            *bool     `json:"stream,omitempty"`
+	Logprobs          *uint8    `json:"logprobs"`
+
 	// Prompt exists only for backwards compatibility. Do not use it in new
 	// implementations. It will be removed once we are reasonably sure 99%
 	// of VSCode extension installations are upgraded to a new Cody version.
-	Prompt                                       string    `json:"prompt"`
-	Messages                                     []Message `json:"messages"`
-	MaxTokensToSample                            int       `json:"maxTokensToSample,omitempty"`
-	Temperature                                  float32   `json:"temperature,omitempty"`
-	StopSequences                                []string  `json:"stopSequences,omitempty"`
-	TopK                                         int       `json:"topK,omitempty"`
-	TopP                                         float32   `json:"topP,omitempty"`
-	Model                                        string    `json:"model,omitempty"`
-	Stream                                       *bool     `json:"stream,omitempty"`
-	Logprobs                                     *uint8    `json:"logprobs"`
-	User                                         string    `json:"user,omitempty"`
-	AzureChatModel                               string    `json:"azureChatModel,omitempty"`
-	AzureCompletionModel                         string    `json:"azureCompletionModel,omitempty"`
-	AzureUseDeprecatedCompletionsAPIForOldModels bool      `json:"azureUseDeprecatedCompletionsAPIForOldModels,omitempty"`
+	Prompt string `json:"prompt"`
 }
 
 // IsStream returns whether a streaming response is requested. For backwards
@@ -93,7 +104,7 @@ func defaultStreamMode(feature CompletionsFeature) bool {
 	}
 }
 
-func (p *CompletionRequestParameters) Attrs(feature CompletionsFeature) []attribute.KeyValue {
+func (p *CompletionRequestParameters) Attrs(modelName string, feature CompletionsFeature) []attribute.KeyValue {
 	return []attribute.KeyValue{
 		attribute.Int("promptLength", len(p.Prompt)),
 		attribute.Int("numMessages", len(p.Messages)),
@@ -101,7 +112,7 @@ func (p *CompletionRequestParameters) Attrs(feature CompletionsFeature) []attrib
 		attribute.Float64("temperature", float64(p.Temperature)),
 		attribute.Int("topK", p.TopK),
 		attribute.Float64("topP", float64(p.TopP)),
-		attribute.String("model", p.Model),
+		attribute.String("model", modelName),
 		attribute.Bool("stream", p.IsStream(feature)),
 	}
 }
@@ -191,10 +202,34 @@ const (
 	CodyClientJetbrains CodyClientName = "jetbrains"
 )
 
+// ModelConfigInfo is all the configuration information about the LLM Model and
+// the Provider we are using to resolve the request.
+type ModelConfigInfo struct {
+	Provider modelconfig.Provider
+	Model    modelconfig.Model
+
+	// CodyProUserAccessToken is an awkward hack for the asymmetry between Cody Enterprise
+	// and Cody Pro. For Cody Enterprise, requests are sent to Cody Gateway using the
+	// Sourcegraph instance's access token derived from their license key. (i.e. all the
+	// server-side configuration data found in `Provider.ServerSideConfig.SourcegraphProviderConfig`.
+	//
+	// Leave as `nil` for Cody Enterprise requests, which will then use the access token
+	// from the Provider.ServerSideConfig.SourcegraphProviderConfig.
+	//
+	// Cody Pro users are authenticated on Cody Gateway by their dotcom access token. So
+	// it doesn't make sense to store that in the Provider's server-side config, as it is
+	// instead bound to this particular HTTP request.
+	//
+	// In the future, we'll be able to rectify this by having Cody Free/Cody Pro users authenticate
+	// via a shared access token bound to the "Cody Pro Team" / "Sourcegraph Organization".
+	CodyProUserAccessToken *string
+}
+
 type CompletionRequest struct {
-	Feature    CompletionsFeature
-	Version    CompletionsVersion
-	Parameters CompletionRequestParameters
+	Feature         CompletionsFeature
+	ModelConfigInfo ModelConfigInfo
+	Parameters      CompletionRequestParameters
+	Version         CompletionsVersion
 }
 
 type CompletionsClient interface {

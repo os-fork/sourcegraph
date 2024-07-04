@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
-	"strings"
 
 	"github.com/sourcegraph/log"
 	"go.opentelemetry.io/otel/attribute"
@@ -26,29 +25,29 @@ import (
 
 // NewClient instantiates a completions provider backed by Sourcegraph's managed
 // Cody Gateway service.
-func NewClient(cli httpcli.Doer, endpoint, accessToken string, tokenizer tokenusage.Manager) (types.CompletionsClient, error) {
+func NewClient(cli httpcli.Doer, endpoint, accessToken string, tokenManager tokenusage.Manager) (types.CompletionsClient, error) {
 	gatewayURL, err := url.Parse(endpoint)
 	if err != nil {
 		return nil, err
 	}
 	return &codyGatewayClient{
-		upstream:    cli,
-		gatewayURL:  gatewayURL,
-		accessToken: accessToken,
-		tokenizer:   tokenizer,
+		upstream:     cli,
+		gatewayURL:   gatewayURL,
+		accessToken:  accessToken,
+		tokenManager: tokenManager,
 	}, nil
 }
 
 type codyGatewayClient struct {
-	upstream    httpcli.Doer
-	gatewayURL  *url.URL
-	accessToken string
-	tokenizer   tokenusage.Manager
+	upstream     httpcli.Doer
+	gatewayURL   *url.URL
+	accessToken  string
+	tokenManager tokenusage.Manager
 }
 
 func (c *codyGatewayClient) Stream(
 	ctx context.Context, logger log.Logger, request types.CompletionRequest, sendEvent types.SendCompletionEvent) error {
-	cc, err := c.clientForParams(request.Feature, &request.Parameters)
+	cc, err := c.clientForParams(request.Feature, &request)
 	if err != nil {
 		return err
 	}
@@ -58,7 +57,7 @@ func (c *codyGatewayClient) Stream(
 }
 
 func (c *codyGatewayClient) Complete(ctx context.Context, logger log.Logger, request types.CompletionRequest) (*types.CompletionResponse, error) {
-	cc, err := c.clientForParams(request.Feature, &request.Parameters)
+	cc, err := c.clientForParams(request.Feature, &request)
 	if err != nil {
 		return nil, err
 	}
@@ -78,39 +77,39 @@ func overwriteErrSource(err error) error {
 	return err
 }
 
-func (c *codyGatewayClient) clientForParams(feature types.CompletionsFeature, requestParams *types.CompletionRequestParameters) (types.CompletionsClient, error) {
-	// Extract provider and model from the Cody Gateway model format and override
-	// the request parameter's model.
-	provider, model := getProviderFromGatewayModel(strings.ToLower(requestParams.Model))
-	requestParams.Model = model
+func (c *codyGatewayClient) clientForParams(feature types.CompletionsFeature, request *types.CompletionRequest) (types.CompletionsClient, error) {
+	// Tease out the ProviderID and ModelID from the requested model.
+	model := request.ModelConfigInfo.Model
+	providerID := model.ModelRef.ProviderID() // e.g. "anthropic"
+	modelID := model.ModelRef.ModelID()       // e.g. "claude-1.5-instant"
 
-	// Based on the provider, instantiate the appropriate client backed by a
-	// gatewayDoer that authenticates against the Gateway's API.
-	switch provider {
-	case string(conftypes.CompletionsProviderNameAnthropic):
-		return anthropic.NewClient(gatewayDoer(c.upstream, feature, c.gatewayURL, c.accessToken, "/v1/completions/anthropic-messages"), "", "", true, c.tokenizer), nil
-	case string(conftypes.CompletionsProviderNameOpenAI):
-		return openai.NewClient(gatewayDoer(c.upstream, feature, c.gatewayURL, c.accessToken, "/v1/completions/openai"), "", "", c.tokenizer), nil
-	case string(conftypes.CompletionsProviderNameFireworks):
-		return fireworks.NewClient(gatewayDoer(c.upstream, feature, c.gatewayURL, c.accessToken, "/v1/completions/fireworks"), "", ""), nil
-	case string(conftypes.CompletionsProviderNameGoogle):
-		return google.NewClient(gatewayDoer(c.upstream, feature, c.gatewayURL, c.accessToken, "/v1/completions/google"), "", "", true)
+	// We then return a CompletionsClient specific to the provider. Except configured in such a way
+	// that the request will be sent to Cody Gateway.
+	//
+	// Note that we set the endpoint and access token for the API provider to "". The trick is that
+	// the httpcli.Doer will route this to Cody Gateway, and use the the `codyGatewayClient`'s access token.
+	switch conftypes.CompletionsProviderName(providerID) {
+	case conftypes.CompletionsProviderNameAnthropic:
+		doer := gatewayDoer(c.upstream, feature, c.gatewayURL, c.accessToken, "/v1/completions/anthropic-messages")
+		client := anthropic.NewClient(doer, "", "", true, c.tokenManager)
+		return client, nil
+	case conftypes.CompletionsProviderNameOpenAI:
+		doer := gatewayDoer(c.upstream, feature, c.gatewayURL, c.accessToken, "/v1/completions/openai")
+		client := openai.NewClient(doer, "", "", c.tokenManager)
+		return client, nil
+	case conftypes.CompletionsProviderNameFireworks:
+		doer := gatewayDoer(c.upstream, feature, c.gatewayURL, c.accessToken, "/v1/completions/fireworks")
+		client := fireworks.NewClient(doer, "", "")
+		return client, nil
+	case conftypes.CompletionsProviderNameGoogle:
+		doer := gatewayDoer(c.upstream, feature, c.gatewayURL, c.accessToken, "/v1/completions/google")
+		return google.NewClient(doer, "", "", true)
+
 	case "":
-		return nil, errors.Newf("no provider provided in model %s - a model in the format '$PROVIDER/$MODEL_NAME' is expected", model)
+		return nil, errors.Newf("no provider available for modelID %q - a model in the format '$PROVIDER/$MODEL_NAME' is expected", modelID)
 	default:
-		return nil, errors.Newf("no client known for upstream provider %s", provider)
+		return nil, errors.Newf("no client known for upstream provider %q", providerID)
 	}
-}
-
-// getProviderFromGatewayModel extracts the model provider from Cody Gateway
-// configuration's expected model naming format, "$PROVIDER/$MODEL_NAME".
-// If a prefix isn't present, the whole value is assumed to be the model.
-func getProviderFromGatewayModel(gatewayModel string) (provider string, model string) {
-	parts := strings.SplitN(gatewayModel, "/", 2)
-	if len(parts) < 2 {
-		return "", parts[0] // assume it's the provider that's missing, not the model.
-	}
-	return parts[0], parts[1]
 }
 
 type roundTripperFunc func(*http.Request) (*http.Response, error)
