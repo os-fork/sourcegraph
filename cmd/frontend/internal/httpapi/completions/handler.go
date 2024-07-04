@@ -448,7 +448,7 @@ func serveStreamingResponse(
 func serveSyncResponse(
 	w http.ResponseWriter,
 	ctx context.Context, db database.DB, logger log.Logger,
-	compRequest types.CompletionRequest, cc types.CompletionsClient, test guardrails.AttributionTest) {
+	compRequest types.CompletionRequest, cc types.CompletionsClient, _ guardrails.AttributionTest) {
 
 	completion, err := cc.Complete(ctx, logger, compRequest)
 	if err != nil {
