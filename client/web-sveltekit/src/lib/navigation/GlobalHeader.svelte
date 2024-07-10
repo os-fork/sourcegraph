@@ -62,7 +62,7 @@
         </button>
 
         <a href="/search">
-            <img src={mark} alt="Sourcegraph" width="25" height="25" />
+            <Icon icon={ISgMark} aria-hidden="true" --icon-color="initial" />
         </a>
     </div>
 
@@ -79,7 +79,8 @@
                 </button>
 
                 <a href="/search" class="logo-link">
-                    <SourcegraphLogo width="9.1rem" />
+                    <!-- Match the size of the mark when the panel is closed so the mark doesn't shift -->
+                    <SourcegraphLogo height={24} />
                 </a>
             </div>
             <ul class="top-navigation">
