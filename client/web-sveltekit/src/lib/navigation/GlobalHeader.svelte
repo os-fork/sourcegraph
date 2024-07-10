@@ -17,7 +17,6 @@
     import { page } from '$app/stores'
     import { onClickOutside } from '$lib/dom'
     import Icon from '$lib/Icon.svelte'
-    import { mark } from '$lib/images'
     import MainNavigationLink from '$lib/navigation/MainNavigationLink.svelte'
     import Popover from '$lib/Popover.svelte'
     import SourcegraphLogo from '$lib/SourcegraphLogo.svelte'
