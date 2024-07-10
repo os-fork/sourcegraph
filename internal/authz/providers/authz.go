@@ -19,7 +19,6 @@ import (
 	"github.com/sourcegraph/sourcegraph/internal/database"
 	"github.com/sourcegraph/sourcegraph/internal/extsvc"
 	"github.com/sourcegraph/sourcegraph/internal/httpcli"
-	"github.com/sourcegraph/sourcegraph/internal/licensing"
 	"github.com/sourcegraph/sourcegraph/internal/types"
 	"github.com/sourcegraph/sourcegraph/lib/errors"
 	"github.com/sourcegraph/sourcegraph/schema"
@@ -40,7 +39,6 @@ func ProvidersFromConfig(
 	cfg conftypes.SiteConfigQuerier,
 	db database.DB,
 ) (
-	allowAccessByDefault bool,
 	providers []authz.Provider,
 	seriousProblems []string,
 	warnings []string,
@@ -48,11 +46,9 @@ func ProvidersFromConfig(
 ) {
 	logger := log.Scoped("authz")
 
-	allowAccessByDefault = true
 	defer func() {
 		if len(seriousProblems) > 0 {
 			logger.Error("Repository authz config was invalid (errors are visible in the UI as an admin user, you should fix ASAP). Restricting access to repositories by default for now to be safe.", log.Strings("seriousProblems", seriousProblems))
-			allowAccessByDefault = false
 		}
 	}()
 
@@ -164,7 +160,7 @@ func ProvidersFromConfig(
 	initResult.Append(gerrit.NewAuthzProviders(gerritConns, cfg.SiteConfig().AuthProviders))
 	initResult.Append(azuredevops.NewAuthzProviders(db, azuredevopsConns, httpcli.ExternalClient))
 
-	return allowAccessByDefault, initResult.Providers, initResult.Problems, initResult.Warnings, initResult.InvalidConnections
+	return initResult.Providers, initResult.Problems, initResult.Warnings, initResult.InvalidConnections
 }
 
 func RefreshInterval(cfg conftypes.UnifiedQuerier) time.Duration {
@@ -173,18 +169,6 @@ func RefreshInterval(cfg conftypes.UnifiedQuerier) time.Duration {
 		return 5 * time.Second
 	}
 	return time.Duration(interval) * time.Second
-}
-
-// PermissionSyncingDisabled returns true if the background permissions syncing is not enabled.
-// It is not enabled if:
-//   - There are no code host connections with authorization or enforcePermissions enabled
-//   - Not purchased with the current license
-//   - `disableAutoCodeHostSyncs` site setting is set to true
-func PermissionSyncingDisabled(cfg conftypes.UnifiedQuerier) bool {
-	_, p := authz.GetProviders()
-	return len(p) == 0 ||
-		licensing.Check(licensing.FeatureACLs) != nil ||
-		cfg.SiteConfig().DisableAutoCodeHostSyncs
 }
 
 var ValidateExternalServiceConfig = database.MakeValidateExternalServiceConfigFunc(

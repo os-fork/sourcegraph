@@ -67,9 +67,9 @@ func TestPermsSyncer_syncUserPerms(t *testing.T) {
 		serviceType: extsvc.TypeGitLab,
 		serviceID:   "https://gitlab.com/",
 	}
-	authz.SetProviders(false, []authz.Provider{p})
+	authz.SetProviders([]authz.Provider{p})
 	t.Cleanup(func() {
-		authz.SetProviders(true, nil)
+		authz.SetProviders(nil)
 	})
 
 	extAccount := extsvc.Account{
@@ -157,9 +157,9 @@ func TestPermsSyncer_syncUserPerms_listExternalAccountsError(t *testing.T) {
 		serviceType: extsvc.TypeGitLab,
 		serviceID:   "https://gitlab.com/",
 	}
-	authz.SetProviders(false, []authz.Provider{p})
+	authz.SetProviders([]authz.Provider{p})
 	t.Cleanup(func() {
-		authz.SetProviders(true, nil)
+		authz.SetProviders(nil)
 	})
 
 	users := dbmocks.NewMockUserStore()
@@ -226,9 +226,9 @@ func TestPermsSyncer_syncUserPerms_fetchAccount(t *testing.T) {
 		serviceType: extsvc.TypeGitHub,
 		serviceID:   "https://github.com/",
 	}
-	authz.SetProviders(false, []authz.Provider{p1, p2})
+	authz.SetProviders([]authz.Provider{p1, p2})
 	t.Cleanup(func() {
-		authz.SetProviders(true, nil)
+		authz.SetProviders(nil)
 	})
 
 	users := dbmocks.NewMockUserStore()
@@ -396,9 +396,9 @@ func TestPermsSyncer_syncUserPermsTemporaryProviderError(t *testing.T) {
 		serviceType: extsvc.TypeGitLab,
 		serviceID:   "https://gitlab.com/",
 	}
-	authz.SetProviders(false, []authz.Provider{p})
+	authz.SetProviders([]authz.Provider{p})
 	t.Cleanup(func() {
-		authz.SetProviders(true, nil)
+		authz.SetProviders(nil)
 	})
 
 	extAccount := extsvc.Account{
@@ -487,9 +487,9 @@ func TestPermsSyncer_syncUserPerms_noPerms(t *testing.T) {
 		serviceType: extsvc.TypeGitLab,
 		serviceID:   "https://gitlab.com/",
 	}
-	authz.SetProviders(false, []authz.Provider{p})
+	authz.SetProviders([]authz.Provider{p})
 	t.Cleanup(func() {
-		authz.SetProviders(true, nil)
+		authz.SetProviders(nil)
 	})
 
 	extAccount := extsvc.Account{
@@ -583,9 +583,9 @@ func TestPermsSyncer_syncUserPerms_tokenExpire(t *testing.T) {
 		serviceType: extsvc.TypeGitHub,
 		serviceID:   "https://github.com/",
 	}
-	authz.SetProviders(false, []authz.Provider{p})
+	authz.SetProviders([]authz.Provider{p})
 	t.Cleanup(func() {
-		authz.SetProviders(true, nil)
+		authz.SetProviders(nil)
 	})
 
 	extAccount := extsvc.Account{
@@ -680,9 +680,9 @@ func TestPermsSyncer_syncUserPerms_prefixSpecs(t *testing.T) {
 		serviceType: extsvc.TypePerforce,
 		serviceID:   "ssl:111.222.333.444:1666",
 	}
-	authz.SetProviders(false, []authz.Provider{p})
+	authz.SetProviders([]authz.Provider{p})
 	t.Cleanup(func() {
-		authz.SetProviders(true, nil)
+		authz.SetProviders(nil)
 	})
 
 	extAccount := extsvc.Account{
@@ -757,9 +757,9 @@ func TestPermsSyncer_syncUserPerms_subRepoPermissions(t *testing.T) {
 		serviceType: extsvc.TypePerforce,
 		serviceID:   "ssl:111.222.333.444:1666",
 	}
-	authz.SetProviders(false, []authz.Provider{p})
+	authz.SetProviders([]authz.Provider{p})
 	t.Cleanup(func() {
-		authz.SetProviders(true, nil)
+		authz.SetProviders(nil)
 	})
 
 	users := dbmocks.NewMockUserStore()
@@ -918,9 +918,9 @@ func TestPermsSyncer_syncRepoPerms(t *testing.T) {
 				return nil, errors.New("not supposed to be called")
 			},
 		}
-		authz.SetProviders(false, []authz.Provider{p1, p2})
+		authz.SetProviders([]authz.Provider{p1, p2})
 		t.Cleanup(func() {
-			authz.SetProviders(true, nil)
+			authz.SetProviders(nil)
 		})
 
 		mockRepos.ListFunc.SetDefaultReturn(
@@ -1004,9 +1004,9 @@ func TestPermsSyncer_syncRepoPerms(t *testing.T) {
 			},
 		}
 
-		authz.SetProviders(false, []authz.Provider{p})
+		authz.SetProviders([]authz.Provider{p})
 		t.Cleanup(func() {
-			authz.SetProviders(true, nil)
+			authz.SetProviders(nil)
 		})
 		mockRepos.GetFunc.SetDefaultReturn(
 			&types.Repo{
@@ -1054,9 +1054,9 @@ func TestPermsSyncer_syncRepoPerms(t *testing.T) {
 		serviceType: extsvc.TypeGitLab,
 		serviceID:   "https://gitlab.com/",
 	}
-	authz.SetProviders(false, []authz.Provider{p})
+	authz.SetProviders([]authz.Provider{p})
 	t.Cleanup(func() {
-		authz.SetProviders(true, nil)
+		authz.SetProviders(nil)
 	})
 
 	mockRepos.ListFunc.SetDefaultReturn(

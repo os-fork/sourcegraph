@@ -76,10 +76,10 @@ func TestAuthzQueryConds(t *testing.T) {
 	db := NewDB(logger, dbtest.NewDB(t))
 
 	t.Run("When permissions user mapping is enabled", func(t *testing.T) {
-		authz.SetProviders(false, []authz.Provider{&fakeProvider{}})
+		authz.SetProviders([]authz.Provider{&fakeProvider{}})
 		cleanup := mockExplicitPermsConfig(true)
 		t.Cleanup(func() {
-			authz.SetProviders(true, nil)
+			authz.SetProviders(nil)
 			cleanup()
 		})
 
@@ -93,10 +93,10 @@ func TestAuthzQueryConds(t *testing.T) {
 	})
 
 	t.Run("When permissions user mapping is enabled, unrestricted repos work correctly", func(t *testing.T) {
-		authz.SetProviders(false, []authz.Provider{&fakeProvider{}})
+		authz.SetProviders([]authz.Provider{&fakeProvider{}})
 		cleanup := mockExplicitPermsConfig(true)
 		t.Cleanup(func() {
-			authz.SetProviders(true, nil)
+			authz.SetProviders(nil)
 			cleanup()
 		})
 
@@ -112,10 +112,9 @@ func TestAuthzQueryConds(t *testing.T) {
 	u, err := db.Users().Create(context.Background(), NewUser{Username: "testuser"})
 	require.NoError(t, err)
 	tests := []struct {
-		name                string
-		setup               func(t *testing.T) (context.Context, DB)
-		authzAllowByDefault bool
-		wantQuery           *sqlf.Query
+		name      string
+		setup     func(t *testing.T) (context.Context, DB)
+		wantQuery *sqlf.Query
 	}{
 		{
 			name: "internal actor bypass checks",
@@ -125,19 +124,11 @@ func TestAuthzQueryConds(t *testing.T) {
 			wantQuery: authzQuery(true, int32(0)),
 		},
 		{
-			name: "no authz provider and not allow by default",
+			name: "no authz provider",
 			setup: func(t *testing.T) (context.Context, DB) {
 				return context.Background(), db
 			},
 			wantQuery: authzQuery(false, int32(0)),
-		},
-		{
-			name: "no authz provider but allow by default",
-			setup: func(t *testing.T) (context.Context, DB) {
-				return context.Background(), db
-			},
-			authzAllowByDefault: true,
-			wantQuery:           authzQuery(true, int32(0)),
 		},
 		{
 			name: "authenticated user is a site admin",
@@ -171,9 +162,6 @@ func TestAuthzQueryConds(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			authz.SetProviders(test.authzAllowByDefault, nil)
-			defer authz.SetProviders(true, nil)
-
 			ctx, mockDB := test.setup(t)
 			q, err := AuthzQueryConds(ctx, mockDB)
 			if err != nil {
@@ -294,9 +282,9 @@ func TestRepoStore_userCanSeeUnrestricedRepo(t *testing.T) {
 	ctx := context.Background()
 	alice, unrestrictedRepo := setupUnrestrictedDB(t, ctx, db)
 
-	authz.SetProviders(false, []authz.Provider{&fakeProvider{}})
+	authz.SetProviders([]authz.Provider{&fakeProvider{}})
 	t.Cleanup(func() {
-		authz.SetProviders(true, nil)
+		authz.SetProviders(nil)
 	})
 
 	t.Run("Alice cannot see private repo, but can see unrestricted repo", func(t *testing.T) {
@@ -365,12 +353,12 @@ func TestRepoStore_userCanSeePublicRepo(t *testing.T) {
 	alice, publicRepo := setupPublicRepo(t, db)
 
 	t.Run("Alice can see public repo with explicit permissions ON", func(t *testing.T) {
-		authz.SetProviders(false, []authz.Provider{&fakeProvider{}})
+		authz.SetProviders([]authz.Provider{&fakeProvider{}})
 		cleanup := mockExplicitPermsConfig(true)
 
 		t.Cleanup(func() {
 			cleanup()
-			authz.SetProviders(true, nil)
+			authz.SetProviders(nil)
 		})
 
 		aliceCtx := actor.WithActor(ctx, &actor.Actor{UID: alice.ID})
@@ -526,8 +514,8 @@ func TestRepoStore_List_checkPermissions(t *testing.T) {
 	admin, alice, bob, cindy := users["admin"], users["alice"], users["bob"], users["cindy"]
 	alicePublicRepo, alicePrivateRepo, bobPublicRepo, bobPrivateRepo, cindyPrivateRepo := repos["alice_public_repo"], repos["alice_private_repo"], repos["bob_public_repo"], repos["bob_private_repo"], repos["cindy_private_repo"]
 
-	authz.SetProviders(false, []authz.Provider{&fakeProvider{}})
-	defer authz.SetProviders(true, nil)
+	authz.SetProviders([]authz.Provider{&fakeProvider{}})
+	defer authz.SetProviders(nil)
 
 	assertRepos := func(t *testing.T, ctx context.Context, want []*types.Repo) {
 		t.Helper()

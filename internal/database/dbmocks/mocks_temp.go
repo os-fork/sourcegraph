@@ -52603,9 +52603,6 @@ func NewMockPermsStoreFrom(i database.PermsStore) *MockPermsStore {
 		HandleFunc: &PermsStoreHandleFunc{
 			defaultHook: i.Handle,
 		},
-		IsRepoUnrestrictedFunc: &PermsStoreIsRepoUnrestrictedFunc{
-			defaultHook: i.IsRepoUnrestricted,
-		},
 		ListPendingUsersFunc: &PermsStoreListPendingUsersFunc{
 			defaultHook: i.ListPendingUsers,
 		},

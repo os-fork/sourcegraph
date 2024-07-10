@@ -3927,8 +3927,8 @@ func TestPermsStore_ListUserPermissions(t *testing.T) {
 		}
 	})
 	// Set fake authz providers otherwise authz is bypassed
-	authz.SetProviders(false, []authz.Provider{&fakePermsProvider{}})
-	defer authz.SetProviders(true, nil)
+	authz.SetProviders([]authz.Provider{&fakePermsProvider{}})
+	defer authz.SetProviders(nil)
 	// Set up some repositories and permissions
 	qs := []*sqlf.Query{
 		sqlf.Sprintf(`INSERT INTO users(id, username, site_admin) VALUES(555, 'user555', FALSE)`),
@@ -4327,8 +4327,8 @@ func TestPermsStore_ListRepoPermissions(t *testing.T) {
 		t.Run(test.Name, func(t *testing.T) {
 			if !test.NoAuthzProviders {
 				// Set fake authz providers otherwise authz is bypassed
-				authz.SetProviders(false, []authz.Provider{&fakePermsProvider{}})
-				defer authz.SetProviders(true, nil)
+				authz.SetProviders([]authz.Provider{&fakePermsProvider{}})
+				defer authz.SetProviders(nil)
 			}
 
 			conf.Mock(
