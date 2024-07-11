@@ -61,7 +61,7 @@
         </button>
 
         <a href="/search">
-            <Icon icon={ISgMark} aria-hidden="true" --icon-color="initial" />
+            <Icon icon={ISgMark} aria-label="Sourcegraph" aria-hidden="true" --icon-color="initial" />
         </a>
     </div>
 
@@ -182,7 +182,7 @@
             margin-left: 0;
         }
 
-        img:hover {
+        :global([data-icon]):hover {
             @keyframes spin {
                 50% {
                     transform: rotate(180deg) scale(1.2);
