@@ -12,7 +12,6 @@ go_library(
     deps = [
         "//cmd/worker/internal/auth",
         "//cmd/worker/internal/authz",
-        "//cmd/worker/internal/encryption",
         "//cmd/worker/internal/githubapps",
         "//cmd/worker/internal/gitserver",
         "//cmd/worker/internal/licensecheck",
@@ -20,8 +19,6 @@ go_library(
         "//cmd/worker/internal/ratelimit",
         "//cmd/worker/internal/repostatistics",
         "//cmd/worker/internal/sourcegraphaccounts",
-        "//cmd/worker/internal/telemetry",
-        "//cmd/worker/internal/telemetrygatewayexporter",
         "//cmd/worker/internal/webhooks",
         "//cmd/worker/internal/zoektrepos",
         "//cmd/worker/job",
