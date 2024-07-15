@@ -16,6 +16,10 @@
     export let usages: ExplorePanel_Usage[]
     export let scrollContainer: HTMLElement | null
 
+    // TODO: remove all the usageRange! assertions once the backend is updated to
+    // use a non-nullable type in the API. I've already confirmed that it should always
+    // be non-null.
+    //
     // FIXME: Assumes that all usages for a repo/path combo are at the same revision.
     $: revision = usages[0].usageRange!.revision
 
