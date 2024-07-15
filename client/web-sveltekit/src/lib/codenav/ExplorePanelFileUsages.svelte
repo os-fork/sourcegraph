@@ -19,9 +19,6 @@
     // FIXME: Assumes that all usages for a repo/path combo are at the same revision.
     $: revision = usages[0].usageRange!.revision
 
-    // TODO: ideally, we'd store this state outside the component so it doesn't
-    // flash every time it loads initially from the cache. However, this will
-    // be much less a big deal once we have proper plaintext lines.
     let highlightedHTMLChunks: string[][] | undefined
     let visible = false
     $: if (visible) {
