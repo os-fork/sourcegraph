@@ -16,7 +16,6 @@ export interface CodeGraphData {
     occurrences: Occurrence[]
 }
 
-// TODO: document, and is a string union the correct choice here?
 export type Provenance = 'PRECISE' | 'SYNTACTIC' | 'SEARCH_BASED'
 
 // IndexedCodeGraphData adds an occurrence index to the code graph
