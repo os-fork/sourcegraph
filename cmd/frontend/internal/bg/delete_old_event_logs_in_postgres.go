@@ -8,21 +8,25 @@ import (
 
 	"github.com/sourcegraph/sourcegraph/internal/conf"
 	"github.com/sourcegraph/sourcegraph/internal/database"
+	"github.com/sourcegraph/sourcegraph/internal/tenant"
 )
 
 func DeleteOldEventLogsInPostgres(ctx context.Context, logger log.Logger, db database.DB) {
 	logger = logger.Scoped("deleteOldEventLogs")
 
 	for {
-		// We choose 93 days as the interval to ensure that we have at least the last three months
-		// of logs at all times.
-		_, err := db.ExecContext(
-			ctx,
-			`DELETE FROM event_logs WHERE "timestamp" < now() - interval '93' day`,
-		)
-		if err != nil {
-			logger.Error("deleting expired rows from event_logs table", log.Error(err))
-		}
+		_ = tenant.ForEachTenant(ctx, func(ctx context.Context) error {
+			// We choose 93 days as the interval to ensure that we have at least the last three months
+			// of logs at all times.
+			_, err := db.ExecContext(
+				ctx,
+				`DELETE FROM event_logs WHERE "timestamp" < now() - interval '93' day`,
+			)
+			if err != nil {
+				logger.Error("deleting expired rows from event_logs table", log.Error(err))
+			}
+			return nil
+		})
 		time.Sleep(time.Hour)
 	}
 }
@@ -44,12 +48,15 @@ func DeleteOldSecurityEventLogsInPostgres(ctx context.Context, logger log.Logger
 
 		// We choose 30 days as the interval to ensure that we have at least the last month's worth of
 		// logs at all times.
-		_, err := db.ExecContext(
-			ctx,
-			`DELETE FROM security_event_logs WHERE "timestamp" < now() - interval '30' day`,
-		)
-		if err != nil {
-			logger.Error("deleting expired rows from security_event_logs table", log.Error(err))
-		}
+		_ = tenant.ForEachTenant(ctx, func(ctx context.Context) error {
+			_, err := db.ExecContext(
+				ctx,
+				`DELETE FROM security_event_logs WHERE "timestamp" < now() - interval '30' day`,
+			)
+			if err != nil {
+				logger.Error("deleting expired rows from security_event_logs table", log.Error(err))
+			}
+			return nil
+		})
 	}
 }
