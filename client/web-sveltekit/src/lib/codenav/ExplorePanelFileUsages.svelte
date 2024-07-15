@@ -45,7 +45,7 @@
 
     function hrefForUsage(usage: ExplorePanel_Usage): string {
         const { repository, revision, path, range } = usage.usageRange!
-        // TODO: only include revision if it exists
+        // TODO: omit revision if navigating to the default branch.
         return SourcegraphURL.from(`${repository}@${revision}/-/blob/${path}`)
             .setLineRange({
                 line: range.start.line + 1,
