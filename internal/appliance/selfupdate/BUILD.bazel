@@ -15,7 +15,6 @@ go_library(
         "@com_github_sourcegraph_log//:log",
         "@io_k8s_api//apps/v1:apps",
         "@io_k8s_api//core/v1:core",
-        "@io_k8s_apimachinery//pkg/api/errors",
         "@io_k8s_apimachinery//pkg/types",
         "@io_k8s_sigs_controller_runtime//pkg/client",
     ],

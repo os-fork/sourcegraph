@@ -8,7 +8,6 @@ import (
 	"github.com/life4/genesis/slices"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
-	kerrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -57,17 +56,7 @@ func (u *SelfUpdate) Once(ctx context.Context) error {
 		return errors.Wrap(err, "getting deployment")
 	}
 
-	currentSGVersion, err := u.getCurrentlyDeployedSGVersion(ctx)
-	if err != nil {
-		// Wait for SG to be deployed before alloweing self-update
-		if kerrors.IsNotFound(err) {
-			u.Logger.Info("Sourcegraph ConfigMap not found, exiting appliance self-update")
-			return nil
-		}
-		return errors.Wrap(err, "determining current Sourcegraph version")
-	}
-
-	newTag, err := u.getLatestTag(ctx, currentSGVersion)
+	newTag, err := u.getLatestTag(ctx)
 	if err != nil {
 		return errors.Wrap(err, "getting latest tag")
 	}
@@ -89,9 +78,7 @@ func (u *SelfUpdate) getCurrentlyDeployedSGVersion(ctx context.Context) (string,
 	return cfgMap.GetAnnotations()[config.AnnotationKeyCurrentVersion], nil
 }
 
-// Get latest appliance version that is no more than 2 minor versions ahead of
-// the currently-deployed Sourcegraph version.
-func (u *SelfUpdate) getLatestTag(ctx context.Context, currentSGVersion string) (string, error) {
+func (u *SelfUpdate) getLatestTag(ctx context.Context) (string, error) {
 	versions, err := u.RelregClient.ListVersions(ctx, "sourcegraph")
 	if err != nil {
 		return "", err
@@ -102,10 +89,12 @@ func (u *SelfUpdate) getLatestTag(ctx context.Context, currentSGVersion string) 
 	if len(versionStrs) == 0 {
 		return "", errors.New("no versions found")
 	}
-	latestVersion, err := appliance.HighestVersionNoMoreThanNMinorFromBase(versionStrs, currentSGVersion, 2)
+	semvers, err := appliance.ParseVersions(versionStrs)
 	if err != nil {
-		return "", err
+		return "", errors.Wrap(err, "parsing versions from release registry")
 	}
+	latestVersion := semvers[len(semvers)-1].String()
+
 	u.Logger.Info("found latest version", log.String("version", latestVersion))
 	return latestVersion, nil
 }
