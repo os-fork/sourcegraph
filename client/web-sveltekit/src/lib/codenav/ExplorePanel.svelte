@@ -16,7 +16,7 @@
 
     const exploreContextKey = Symbol('explore context key')
     export function getExplorePanelContext(): ExplorePanelContext {
-        return getContext(exploreContextKey)
+        return getContext(exploreContextKey) ?? { openReferences: () => {} }
     }
     export function setExplorePanelContext(ctx: ExplorePanelContext) {
         setContext(exploreContextKey, ctx)
