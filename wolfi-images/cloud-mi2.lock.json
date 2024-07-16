@@ -394,22 +394,22 @@
       },
       {
         "architecture": "x86_64",
-        "checksum": "Q1DUpLMidX5HbXUAFV8y3Imyt+Ank=",
+        "checksum": "Q1dOm0Ff2SU2bSCIoCyFe3uBPV/sA=",
         "control": {
-          "checksum": "sha1-DUpLMidX5HbXUAFV8y3Imyt+Ank=",
-          "range": "bytes=698-1063"
+          "checksum": "sha1-dOm0Ff2SU2bSCIoCyFe3uBPV/sA=",
+          "range": "bytes=703-1069"
         },
         "data": {
-          "checksum": "sha256-ZUDWWOBnxl5xi3b5HQCHaiYqKDSrnVpJQgavWpn1duc=",
-          "range": "bytes=1064-255810"
+          "checksum": "sha256-yQ0uuWnXktd4FBoc4iO7Y5b0Tles2YgxsJSozfza0mk=",
+          "range": "bytes=1070-255858"
         },
         "name": "c-ares",
         "signature": {
-          "checksum": "sha1-0AXk7b/B1baNADDg/NSocbW//pw=",
-          "range": "bytes=0-697"
+          "checksum": "sha1-UWp3B6TXMUq07XgIb96z5s8I1vE=",
+          "range": "bytes=0-702"
         },
-        "url": "https://packages.wolfi.dev/os/x86_64/c-ares-1.32.1-r0.apk",
-        "version": "1.32.1-r0"
+        "url": "https://packages.wolfi.dev/os/x86_64/c-ares-1.32.2-r0.apk",
+        "version": "1.32.2-r0"
       },
       {
         "architecture": "x86_64",
@@ -945,22 +945,22 @@
       },
       {
         "architecture": "x86_64",
-        "checksum": "Q1cqvmBqrAP2QlJV4IAn1Hs451O10=",
+        "checksum": "Q1BjHJJau2CytzjLZhTQ/nTVqpikI=",
         "control": {
-          "checksum": "sha1-cqvmBqrAP2QlJV4IAn1Hs451O10=",
-          "range": "bytes=699-1057"
+          "checksum": "sha1-BjHJJau2CytzjLZhTQ/nTVqpikI=",
+          "range": "bytes=699-1045"
         },
         "data": {
-          "checksum": "sha256-hVF8tflwY/oUUrf9jv52TwZfqyvA+nvr1OAYZDTP1QY=",
-          "range": "bytes=1058-8956887"
+          "checksum": "sha256-VL0BVGwfMRGy8dm5cUlNdurDuZlN+LWGXqCP4VRXcmk=",
+          "range": "bytes=1046-8931831"
         },
         "name": "npm",
         "signature": {
-          "checksum": "sha1-7Rr/2LbH/tpKPSaWYd3jRQUO1s0=",
+          "checksum": "sha1-UIQbc7avAcbgJxtJhEKWZQSNLNc=",
           "range": "bytes=0-698"
         },
-        "url": "https://packages.wolfi.dev/os/x86_64/npm-10.8.1-r0.apk",
-        "version": "10.8.1-r0"
+        "url": "https://packages.wolfi.dev/os/x86_64/npm-10.8.2-r0.apk",
+        "version": "10.8.2-r0"
       },
       {
         "architecture": "x86_64",
@@ -1002,22 +1002,22 @@
       },
       {
         "architecture": "x86_64",
-        "checksum": "Q1ZrMuP718My90TnZrml7ylUmXGlo=",
+        "checksum": "Q1KgJAD0RtQUCakAdBGVnjppfBRD8=",
         "control": {
-          "checksum": "sha1-ZrMuP718My90TnZrml7ylUmXGlo=",
-          "range": "bytes=702-1093"
+          "checksum": "sha1-KgJAD0RtQUCakAdBGVnjppfBRD8=",
+          "range": "bytes=698-1074"
         },
         "data": {
-          "checksum": "sha256-+ZTF5s9bHKtoArLvOvIL/2seV4pE0ElEj9MlAscAdso=",
-          "range": "bytes=1094-53513"
+          "checksum": "sha256-OYnWS0GkjAi6HQutIcfq3EIqw/RWu9VjJv0MHhJj17s=",
+          "range": "bytes=1075-54087"
         },
         "name": "tini",
         "signature": {
-          "checksum": "sha1-OK9J/Z8qnRssJzNCu9hER8FuzSk=",
-          "range": "bytes=0-701"
+          "checksum": "sha1-LVT2LB/h8Oe3c/9pai1JbjXyR44=",
+          "range": "bytes=0-697"
         },
-        "url": "https://packages.wolfi.dev/os/x86_64/tini-0.19.0-r4.apk",
-        "version": "0.19.0-r4"
+        "url": "https://packages.wolfi.dev/os/x86_64/tini-0.19.0-r5.apk",
+        "version": "0.19.0-r5"
       },
       {
         "architecture": "x86_64",
