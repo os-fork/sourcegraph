@@ -2030,6 +2030,56 @@ func TestClient_Commits(t *testing.T) {
 	})
 }
 
+func TestClient_OctopusMergeBase(t *testing.T) {
+	t.Run("correctly returns server response", func(t *testing.T) {
+		source := NewTestClientSource(t, []string{"gitserver"}, func(o *TestClientSourceOptions) {
+			o.ClientFunc = func(cc *grpc.ClientConn) proto.GitserverServiceClient {
+				c := NewMockGitserverServiceClient()
+				c.OctopusMergeBaseFunc.SetDefaultReturn(&proto.OctopusMergeBaseResponse{MergeBaseCommitSha: "deadbeef"}, nil)
+				return c
+			}
+		})
+
+		c := NewTestClient(t).WithClientSource(source)
+
+		sha, err := c.OctopusMergeBase(context.Background(), "repo", "master", "b2")
+		require.NoError(t, err)
+		require.Equal(t, api.CommitID("deadbeef"), sha)
+	})
+	t.Run("returns empty for empty merge base", func(t *testing.T) {
+		source := NewTestClientSource(t, []string{"gitserver"}, func(o *TestClientSourceOptions) {
+			o.ClientFunc = func(cc *grpc.ClientConn) proto.GitserverServiceClient {
+				c := NewMockGitserverServiceClient()
+				c.OctopusMergeBaseFunc.SetDefaultReturn(&proto.OctopusMergeBaseResponse{MergeBaseCommitSha: ""}, nil)
+				return c
+			}
+		})
+
+		c := NewTestClient(t).WithClientSource(source)
+
+		sha, err := c.OctopusMergeBase(context.Background(), "repo", "master", "b2")
+		require.NoError(t, err)
+		require.Equal(t, api.CommitID(""), sha)
+	})
+	t.Run("revision not found", func(t *testing.T) {
+		source := NewTestClientSource(t, []string{"gitserver"}, func(o *TestClientSourceOptions) {
+			o.ClientFunc = func(cc *grpc.ClientConn) proto.GitserverServiceClient {
+				c := NewMockGitserverServiceClient()
+				s, err := status.New(codes.NotFound, "bad revision").WithDetails(&proto.RevisionNotFoundPayload{Repo: "repo"})
+				require.NoError(t, err)
+				c.OctopusMergeBaseFunc.SetDefaultReturn(nil, s.Err())
+				return c
+			}
+		})
+
+		c := NewTestClient(t).WithClientSource(source)
+
+		_, err := c.OctopusMergeBase(context.Background(), "repo", "master", "b2")
+		require.Error(t, err)
+		require.True(t, errors.HasType[*gitdomain.RevisionNotFoundError](err))
+	})
+}
+
 func mustParseTime(layout, value string) time.Time {
 	tm, err := time.Parse(layout, value)
 	if err != nil {

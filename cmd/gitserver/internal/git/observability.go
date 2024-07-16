@@ -112,6 +112,16 @@ func (b *observableBackend) MergeBase(ctx context.Context, baseRevspec, headRevs
 	return b.backend.MergeBase(ctx, baseRevspec, headRevspec)
 }
 
+func (b *observableBackend) OctopusMergeBase(ctx context.Context, revspecs ...string) (_ api.CommitID, err error) {
+	ctx, _, endObservation := b.operations.octopusMergeBase.With(ctx, &err, observation.Args{})
+	defer endObservation(1, observation.Args{})
+
+	concurrentOps.WithLabelValues("OctopusMergeBase").Inc()
+	defer concurrentOps.WithLabelValues("OctopusMergeBase").Dec()
+
+	return b.backend.OctopusMergeBase(ctx, revspecs...)
+}
+
 func (b *observableBackend) Blame(ctx context.Context, commit api.CommitID, path string, opt BlameOptions) (_ BlameHunkReader, err error) {
 	ctx, errCollector, endObservation := b.operations.blame.WithErrors(ctx, &err, observation.Args{})
 	ctx, cancel := context.WithCancel(ctx)
@@ -536,6 +546,7 @@ type operations struct {
 	latestCommitTimestamp *observation.Operation
 	refHash               *observation.Operation
 	commitLog             *observation.Operation
+	octopusMergeBase      *observation.Operation
 }
 
 func newOperations(observationCtx *observation.Context) *operations {
@@ -588,6 +599,7 @@ func newOperations(observationCtx *observation.Context) *operations {
 		latestCommitTimestamp: op("latest-commit-timestamp"),
 		refHash:               op("ref-hash"),
 		commitLog:             op("commit-log"),
+		octopusMergeBase:      op("octopus-merge-base"),
 	}
 }
 

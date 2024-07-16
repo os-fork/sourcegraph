@@ -588,6 +588,9 @@ type MockGitBackend struct {
 	// MergeBaseFunc is an instance of a mock function object controlling
 	// the behavior of the method MergeBase.
 	MergeBaseFunc *GitBackendMergeBaseFunc
+	// OctopusMergeBaseFunc is an instance of a mock function object
+	// controlling the behavior of the method OctopusMergeBase.
+	OctopusMergeBaseFunc *GitBackendOctopusMergeBaseFunc
 	// RawDiffFunc is an instance of a mock function object controlling the
 	// behavior of the method RawDiff.
 	RawDiffFunc *GitBackendRawDiffFunc
@@ -683,6 +686,11 @@ func NewMockGitBackend() *MockGitBackend {
 		},
 		MergeBaseFunc: &GitBackendMergeBaseFunc{
 			defaultHook: func(context.Context, string, string) (r0 api.CommitID, r1 error) {
+				return
+			},
+		},
+		OctopusMergeBaseFunc: &GitBackendOctopusMergeBaseFunc{
+			defaultHook: func(context.Context, ...string) (r0 api.CommitID, r1 error) {
 				return
 			},
 		},
@@ -803,6 +811,11 @@ func NewStrictMockGitBackend() *MockGitBackend {
 				panic("unexpected invocation of MockGitBackend.MergeBase")
 			},
 		},
+		OctopusMergeBaseFunc: &GitBackendOctopusMergeBaseFunc{
+			defaultHook: func(context.Context, ...string) (api.CommitID, error) {
+				panic("unexpected invocation of MockGitBackend.OctopusMergeBase")
+			},
+		},
 		RawDiffFunc: &GitBackendRawDiffFunc{
 			defaultHook: func(context.Context, string, string, GitDiffComparisonType, ...string) (io.ReadCloser, error) {
 				panic("unexpected invocation of MockGitBackend.RawDiff")
@@ -893,6 +906,9 @@ func NewMockGitBackendFrom(i GitBackend) *MockGitBackend {
 		},
 		MergeBaseFunc: &GitBackendMergeBaseFunc{
 			defaultHook: i.MergeBase,
+		},
+		OctopusMergeBaseFunc: &GitBackendOctopusMergeBaseFunc{
+			defaultHook: i.OctopusMergeBase,
 		},
 		RawDiffFunc: &GitBackendRawDiffFunc{
 			defaultHook: i.RawDiff,
@@ -2336,6 +2352,121 @@ func (c GitBackendMergeBaseFuncCall) Args() []interface{} {
 // Results returns an interface slice containing the results of this
 // invocation.
 func (c GitBackendMergeBaseFuncCall) Results() []interface{} {
+	return []interface{}{c.Result0, c.Result1}
+}
+
+// GitBackendOctopusMergeBaseFunc describes the behavior when the
+// OctopusMergeBase method of the parent MockGitBackend instance is invoked.
+type GitBackendOctopusMergeBaseFunc struct {
+	defaultHook func(context.Context, ...string) (api.CommitID, error)
+	hooks       []func(context.Context, ...string) (api.CommitID, error)
+	history     []GitBackendOctopusMergeBaseFuncCall
+	mutex       sync.Mutex
+}
+
+// OctopusMergeBase delegates to the next hook function in the queue and
+// stores the parameter and result values of this invocation.
+func (m *MockGitBackend) OctopusMergeBase(v0 context.Context, v1 ...string) (api.CommitID, error) {
+	r0, r1 := m.OctopusMergeBaseFunc.nextHook()(v0, v1...)
+	m.OctopusMergeBaseFunc.appendCall(GitBackendOctopusMergeBaseFuncCall{v0, v1, r0, r1})
+	return r0, r1
+}
+
+// SetDefaultHook sets function that is called when the OctopusMergeBase
+// method of the parent MockGitBackend instance is invoked and the hook
+// queue is empty.
+func (f *GitBackendOctopusMergeBaseFunc) SetDefaultHook(hook func(context.Context, ...string) (api.CommitID, error)) {
+	f.defaultHook = hook
+}
+
+// PushHook adds a function to the end of hook queue. Each invocation of the
+// OctopusMergeBase method of the parent MockGitBackend instance invokes the
+// hook at the front of the queue and discards it. After the queue is empty,
+// the default hook function is invoked for any future action.
+func (f *GitBackendOctopusMergeBaseFunc) PushHook(hook func(context.Context, ...string) (api.CommitID, error)) {
+	f.mutex.Lock()
+	f.hooks = append(f.hooks, hook)
+	f.mutex.Unlock()
+}
+
+// SetDefaultReturn calls SetDefaultHook with a function that returns the
+// given values.
+func (f *GitBackendOctopusMergeBaseFunc) SetDefaultReturn(r0 api.CommitID, r1 error) {
+	f.SetDefaultHook(func(context.Context, ...string) (api.CommitID, error) {
+		return r0, r1
+	})
+}
+
+// PushReturn calls PushHook with a function that returns the given values.
+func (f *GitBackendOctopusMergeBaseFunc) PushReturn(r0 api.CommitID, r1 error) {
+	f.PushHook(func(context.Context, ...string) (api.CommitID, error) {
+		return r0, r1
+	})
+}
+
+func (f *GitBackendOctopusMergeBaseFunc) nextHook() func(context.Context, ...string) (api.CommitID, error) {
+	f.mutex.Lock()
+	defer f.mutex.Unlock()
+
+	if len(f.hooks) == 0 {
+		return f.defaultHook
+	}
+
+	hook := f.hooks[0]
+	f.hooks = f.hooks[1:]
+	return hook
+}
+
+func (f *GitBackendOctopusMergeBaseFunc) appendCall(r0 GitBackendOctopusMergeBaseFuncCall) {
+	f.mutex.Lock()
+	f.history = append(f.history, r0)
+	f.mutex.Unlock()
+}
+
+// History returns a sequence of GitBackendOctopusMergeBaseFuncCall objects
+// describing the invocations of this function.
+func (f *GitBackendOctopusMergeBaseFunc) History() []GitBackendOctopusMergeBaseFuncCall {
+	f.mutex.Lock()
+	history := make([]GitBackendOctopusMergeBaseFuncCall, len(f.history))
+	copy(history, f.history)
+	f.mutex.Unlock()
+
+	return history
+}
+
+// GitBackendOctopusMergeBaseFuncCall is an object that describes an
+// invocation of method OctopusMergeBase on an instance of MockGitBackend.
+type GitBackendOctopusMergeBaseFuncCall struct {
+	// Arg0 is the value of the 1st argument passed to this method
+	// invocation.
+	Arg0 context.Context
+	// Arg1 is a slice containing the values of the variadic arguments
+	// passed to this method invocation.
+	Arg1 []string
+	// Result0 is the value of the 1st result returned from this method
+	// invocation.
+	Result0 api.CommitID
+	// Result1 is the value of the 2nd result returned from this method
+	// invocation.
+	Result1 error
+}
+
+// Args returns an interface slice containing the arguments of this
+// invocation. The variadic slice argument is flattened in this array such
+// that one positional argument and three variadic arguments would result in
+// a slice of four, not two.
+func (c GitBackendOctopusMergeBaseFuncCall) Args() []interface{} {
+	trailing := []interface{}{}
+	for _, val := range c.Arg1 {
+		trailing = append(trailing, val)
+	}
+
+	return append([]interface{}{c.Arg0}, trailing...)
+}
+
+// Results returns an interface slice containing the results of this
+// invocation.
+func (c GitBackendOctopusMergeBaseFuncCall) Results() []interface{} {
 	return []interface{}{c.Result0, c.Result1}
 }
 

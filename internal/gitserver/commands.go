@@ -706,6 +706,31 @@ func (c *clientImplementor) MergeBase(ctx context.Context, repo api.RepoName, ba
 	return api.CommitID(res.GetMergeBaseCommitSha()), nil
 }
 
+func (c *clientImplementor) OctopusMergeBase(ctx context.Context, repo api.RepoName, revspecs ...string) (_ api.CommitID, err error) {
+	ctx, _, endObservation := c.operations.octopusMergeBase.With(ctx, &err, observation.Args{
+		MetricLabelValues: []string{c.scope},
+		Attrs: []attribute.KeyValue{
+			attribute.StringSlice("revspecs", revspecs),
+		},
+	})
+	defer endObservation(1, observation.Args{})
+
+	client, err := c.clientSource.ClientForRepo(ctx, repo)
+	if err != nil {
+		return "", err
+	}
+
+	res, err := client.OctopusMergeBase(ctx, &proto.OctopusMergeBaseRequest{
+		RepoName: string(repo),
+		Revspecs: stringsToByteSlices(revspecs),
+	})
+	if err != nil {
+		return "", err
+	}
+
+	return api.CommitID(res.GetMergeBaseCommitSha()), nil
+}
+
 // BehindAhead returns the behind/ahead commit counts information for right vs. left (both Git
 // revspecs).
 func (c *clientImplementor) BehindAhead(ctx context.Context, repo api.RepoName, left, right string) (_ *gitdomain.BehindAhead, err error) {

@@ -1570,6 +1570,81 @@ func TestGRPCServer_CommitLog(t *testing.T) {
 	})
 }
 
+func TestGRPCServer_OctopusMergeBase(t *testing.T) {
+	ctx := context.Background()
+	t.Run("argument validation", func(t *testing.T) {
+		gs := &grpcServer{}
+		_, err := gs.OctopusMergeBase(ctx, &v1.OctopusMergeBaseRequest{RepoName: ""})
+		require.ErrorContains(t, err, "repo must be specified")
+		assertGRPCStatusCode(t, err, codes.InvalidArgument)
+		_, err = gs.OctopusMergeBase(ctx, &v1.OctopusMergeBaseRequest{RepoName: "therepo", Revspecs: [][]byte{}})
+		require.ErrorContains(t, err, "at least 2 revspecs must be specified")
+		assertGRPCStatusCode(t, err, codes.InvalidArgument)
+		_, err = gs.OctopusMergeBase(ctx, &v1.OctopusMergeBaseRequest{RepoName: "therepo", Revspecs: [][]byte{[]byte("onlyone")}})
+		require.ErrorContains(t, err, "at least 2 revspecs must be specified")
+		assertGRPCStatusCode(t, err, codes.InvalidArgument)
+	})
+	t.Run("checks for uncloned repo", func(t *testing.T) {
+		fs := gitserverfs.NewMockFS()
+		fs.RepoClonedFunc.SetDefaultReturn(false, nil)
+		locker := NewMockRepositoryLocker()
+		locker.StatusFunc.SetDefaultReturn("cloning", true)
+		gs := &grpcServer{svc: NewMockService(), fs: fs, locker: locker}
+		_, err := gs.OctopusMergeBase(ctx, &v1.OctopusMergeBaseRequest{RepoName: "therepo", Revspecs: [][]byte{[]byte("one"), []byte("two"), []byte("three")}})
+		require.Error(t, err)
+		assertGRPCStatusCode(t, err, codes.NotFound)
+		assertHasGRPCErrorDetailOfType(t, err, &proto.RepoNotFoundPayload{})
+		require.Contains(t, err.Error(), "repo not found")
+		mockassert.Called(t, fs.RepoClonedFunc)
+		mockassert.Called(t, locker.StatusFunc)
+	})
+	t.Run("revision not found", func(t *testing.T) {
+		fs := gitserverfs.NewMockFS()
+		// Repo is cloned, proceed!
+		fs.RepoClonedFunc.SetDefaultReturn(true, nil)
+		gs := &grpcServer{
+			svc: NewMockService(),
+			fs:  fs,
+			gitBackendSource: func(common.GitDir, api.RepoName) git.GitBackend {
+				b := git.NewMockGitBackend()
+				b.OctopusMergeBaseFunc.SetDefaultReturn("", &gitdomain.RevisionNotFoundError{Repo: "therepo"})
+				return b
+			},
+		}
+		_, err := gs.OctopusMergeBase(ctx, &v1.OctopusMergeBaseRequest{RepoName: "therepo", Revspecs: [][]byte{[]byte("one"), []byte("two"), []byte("three")}})
+		require.Error(t, err)
+		assertGRPCStatusCode(t, err, codes.NotFound)
+		assertHasGRPCErrorDetailOfType(t, err, &proto.RevisionNotFoundPayload{})
+		require.Contains(t, err.Error(), "revision not found")
+	})
+	t.Run("e2e", func(t *testing.T) {
+		fs := gitserverfs.NewMockFS()
+		// Repo is cloned, proceed!
+		fs.RepoClonedFunc.SetDefaultReturn(true, nil)
+		b := git.NewMockGitBackend()
+		b.OctopusMergeBaseFunc.SetDefaultReturn("deadbeef", nil)
+		gs := &grpcServer{
+			svc: NewMockService(),
+			fs:  fs,
+			gitBackendSource: func(common.GitDir, api.RepoName) git.GitBackend {
+				return b
+			},
+		}
+
+		cli := spawnServer(t, gs)
+		res, err := cli.OctopusMergeBase(ctx, &v1.OctopusMergeBaseRequest{
+			RepoName: "therepo",
+			Revspecs: [][]byte{[]byte("one"), []byte("two"), []byte("three")},
+		})
+		require.NoError(t, err)
+		if diff := cmp.Diff(&proto.OctopusMergeBaseResponse{
+			MergeBaseCommitSha: "deadbeef",
+		}, res, cmpopts.IgnoreUnexported(proto.OctopusMergeBaseResponse{})); diff != "" {
+			t.Fatalf("unexpected response (-want +got):\n%s", diff)
+		}
+	})
+}
+
 func assertGRPCStatusCode(t *testing.T, err error, want codes.Code) {
 	t.Helper()
 	s, ok := status.FromError(err)
