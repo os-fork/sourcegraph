@@ -13,6 +13,7 @@
 </script>
 
 <script lang="ts">
+    import { beforeNavigate } from '$app/navigation'
     import { page } from '$app/stores'
     import { onClickOutside } from '$lib/dom'
     import Icon from '$lib/Icon.svelte'
@@ -21,9 +22,10 @@
     import SourcegraphLogo from '$lib/SourcegraphLogo.svelte'
     import { isViewportMediumDown } from '$lib/stores'
     import { Button } from '$lib/wildcard'
-    import Badge from '$lib/wildcard/Badge.svelte'
-    import Toggle from '$lib/wildcard/Toggle.svelte'
+    import { getButtonClassName } from '$lib/wildcard/Button'
+    import ProductStatusBadge from '$lib/wildcard/ProductStatusBadge.svelte'
 
+    import FeedbackDialog from './FeedbackDialog.svelte'
     import { GlobalNavigation_User } from './GlobalNavigation.gql'
     import { type NavigationEntry, type NavigationMenu, isNavigationMenu, isCurrent } from './mainNavigation'
     import UserMenu from './UserMenu.svelte'
@@ -49,6 +51,10 @@
             openedMenu = ''
         }, 500)
     }
+    beforeNavigate(() => {
+        // Always close the sidebar when navigating to a new page
+        sidebarNavigationOpen = false
+    })
 </script>
 
 <header class="root" data-global-header class:withCustomContent class:sidebarMode>
@@ -57,8 +63,8 @@
             <Icon icon={ILucideMenu} aria-label="Navigation menu" />
         </button>
 
-        <a href="/search">
-            <Icon icon={ISgMark} aria-label="Sourcegraph" aria-hidden="true" --icon-color="initial" />
+        <a class="home-link" href="/search" aria-label="Got to search home">
+            <Icon icon={ISgMark} aria-label="Sourcegraph" aria-hidden="true" />
         </a>
     </div>
 
@@ -123,28 +129,17 @@
     <div class="global-portal" bind:this={$extensionElement} />
 
     <div class="web-next-notice">
-        {#if handleOptOut}
-            <Toggle on={true} on:click={() => handleOptOut && handleOptOut()} />
-        {/if}
-        <Popover let:toggle let:registerTrigger>
-            <button class="web-next-badge" use:registerTrigger on:click={() => toggle()}>
-                <Badge variant="warning">Experimental</Badge>
+        <ProductStatusBadge status="beta" />
+        <Popover let:registerTrigger let:toggle placement="bottom-end">
+            <button
+                use:registerTrigger
+                class={getButtonClassName({ variant: 'secondary', size: 'sm' })}
+                on:click={() => toggle()}
+            >
+                New UI Feedback
+                <Icon icon={ILucideChevronDown} inline />
             </button>
-            <div slot="content" class="web-next-content">
-                <h3>Experimental web app</h3>
-                <p>
-                    You are using an experimental version of the Sourcegraph web app. This version is under active
-                    development and may contain bugs or incomplete features.
-                </p>
-                <p>
-                    If you encounter any issues, please report them in our <a href="https://community.sourcegraph.com/"
-                        >community forums</a
-                    >.
-                </p>
-                {#if handleOptOut}
-                    <p>You can opt out of the new experience with the toggle above.</p>
-                {/if}
-            </div>
+            <FeedbackDialog slot="content" {handleOptOut} />
         </Popover>
     </div>
     <div>
@@ -184,18 +179,22 @@
             margin-left: 0;
         }
 
-        :global([data-icon]):hover {
-            @keyframes spin {
-                50% {
-                    transform: rotate(180deg) scale(1.2);
-                }
-                100% {
-                    transform: rotate(180deg) scale(1);
-                }
-            }
+        .home-link {
+            --icon-color: initial;
 
-            @media (prefers-reduced-motion: no-preference) {
-                animation: spin 0.5s ease-in-out 1;
+            &:hover {
+                @keyframes spin {
+                    50% {
+                        transform: rotate(180deg) scale(1.2);
+                    }
+                    100% {
+                        transform: rotate(180deg) scale(1);
+                    }
+                }
+
+                @media (prefers-reduced-motion: no-preference) {
+                    animation: spin 0.5s ease-in-out 1;
+                }
             }
         }
     }
@@ -413,35 +412,13 @@
         }
     }
 
-    // Opt out experiment badge and tooltip styles
-    .opt-out {
-        all: unset;
-        cursor: pointer;
-        color: var(--link-color);
-        text-decoration: underline;
-    }
-
     .web-next-notice {
         display: flex;
         align-items: center;
         gap: 0.5rem;
-    }
-
-    .web-next-badge {
-        all: unset;
-        display: flex;
-        align-items: center;
-        cursor: pointer;
-        margin-left: auto;
-    }
-
-    .web-next-content {
-        padding: 1rem;
-        width: 20rem;
-
-        p:last-child {
-            margin-bottom: 0;
-        }
+        font-size: var(--font-size-small);
+        font-weight: 500;
+        margin-right: 1rem;
     }
 
     // Custom menu with sidebar navigation controls styles

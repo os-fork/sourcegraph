@@ -10,8 +10,9 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/sourcegraph/sourcegraph/cmd/enterprise-portal/internal/database/internal/pgxerrors"
 	"github.com/sourcegraph/sourcegraph/cmd/enterprise-portal/internal/database/internal/upsert"
-	"github.com/sourcegraph/sourcegraph/cmd/enterprise-portal/internal/database/internal/utctime"
+	"github.com/sourcegraph/sourcegraph/cmd/enterprise-portal/internal/database/utctime"
 	"github.com/sourcegraph/sourcegraph/lib/errors"
 )
 
@@ -59,8 +60,6 @@ type Subscription struct {
 
 	// SalesforceSubscriptionID associated with this Enterprise subscription.
 	SalesforceSubscriptionID *string
-	// SalesforceOpportunityID associated with this Enterprise subscription.
-	SalesforceOpportunityID *string
 }
 
 type SubscriptionWithConditions struct {
@@ -78,7 +77,6 @@ func subscriptionTableColumns() []string {
 		"updated_at",
 		"archived_at",
 		"salesforce_subscription_id",
-		"salesforce_opportunity_id",
 
 		subscriptionConditionJSONBAgg(),
 	}
@@ -95,7 +93,6 @@ func scanSubscription(row pgx.Row) (*SubscriptionWithConditions, error) {
 		&s.UpdatedAt,
 		&s.ArchivedAt,
 		&s.SalesforceSubscriptionID,
-		&s.SalesforceOpportunityID,
 		&s.Conditions,
 	)
 	if err != nil {
@@ -104,7 +101,7 @@ func scanSubscription(row pgx.Row) (*SubscriptionWithConditions, error) {
 	return &s, nil
 }
 
-// Store is the storage layer for product subscriptions.
+// Store is the storage layer for Enterprise subscriptions.
 type Store struct {
 	db *pgxpool.Pool
 }
@@ -115,6 +112,10 @@ func NewStore(db *pgxpool.Pool) *Store {
 	}
 }
 
+// Licenses returns a new LicensesStore instance associated with the current
+// Store's database connection.
+func (s *Store) Licenses() *LicensesStore { return NewLicensesStore(s.db) }
+
 // ListEnterpriseSubscriptionsOptions is the set of options to filter subscriptions.
 // Non-empty fields are treated as AND-concatenated.
 type ListEnterpriseSubscriptionsOptions struct {
@@ -124,7 +125,13 @@ type ListEnterpriseSubscriptionsOptions struct {
 	InstanceDomains []string
 	// IsArchived indicates whether to only list archived subscriptions, or only
 	// non-archived subscriptions.
-	IsArchived bool
+	IsArchived *bool
+	// DisplayNameSubstring is a substring match on display name.
+	DisplayNameSubstring string
+	// SalesforceSubscriptionIDs are exact matches on the Salesforce subscription
+	// ID.
+	SalesforceSubscriptionIDs []string
+
 	// PageSize is the maximum number of subscriptions to return.
 	PageSize int
 }
@@ -140,10 +147,24 @@ func (opts ListEnterpriseSubscriptionsOptions) toQueryConditions() (where, limit
 		whereConds = append(whereConds, "instance_domain = ANY(@instanceDomains)")
 		namedArgs["instanceDomains"] = opts.InstanceDomains
 	}
-	// Future: Uncomment the following block when the archived field is added to the table.
-	// if opts.OnlyArchived {
-	// whereConds = append(whereConds, "archived = TRUE")
-	// }
+	if opts.IsArchived != nil {
+		if *opts.IsArchived {
+			whereConds = append(whereConds, "archived_at IS NOT NULL")
+		} else {
+			whereConds = append(whereConds, "archived IS NUlL")
+		}
+	}
+	if len(opts.DisplayNameSubstring) > 0 {
+		whereConds = append(whereConds,
+			"LOWER(display_name) LIKE '%' || LOWER(@displayName) || '%'")
+		namedArgs["displayName"] = opts.DisplayNameSubstring
+	}
+	if len(opts.SalesforceSubscriptionIDs) > 0 {
+		whereConds = append(whereConds,
+			"salesforce_subscription_id = ANY(@salesforceSubscriptionIDs)")
+		namedArgs["salesforceSubscriptionIDs"] = opts.SalesforceSubscriptionIDs
+	}
+
 	where = strings.Join(whereConds, " AND ")
 
 	if opts.PageSize > 0 {
@@ -201,7 +222,6 @@ type UpsertSubscriptionOptions struct {
 	ArchivedAt *utctime.Time
 
 	SalesforceSubscriptionID *string
-	SalesforceOpportunityID  *string
 
 	// ForceUpdate indicates whether to force update all fields of the subscription
 	// record.
@@ -226,7 +246,6 @@ func (opts UpsertSubscriptionOptions) apply(ctx context.Context, db upsert.Exece
 		upsert.WithIgnoreZeroOnForceUpdate())
 
 	upsert.Field(b, "salesforce_subscription_id", opts.SalesforceSubscriptionID)
-	upsert.Field(b, "salesforce_opportunity_id", opts.SalesforceOpportunityID)
 	return b.Exec(ctx, db)
 }
 
@@ -260,6 +279,11 @@ func (s *Store) Upsert(
 	}()
 
 	if err := opts.apply(ctx, tx, subscriptionID); err != nil {
+		if pgxerrors.IsContraintError(err, "idx_enterprise_portal_subscriptions_display_name") {
+			return nil, errors.WithSafeDetails(
+				errors.Newf("display_name %q is already in use", opts.DisplayName.String),
+				"%+v", err)
+		}
 		return nil, errors.Wrap(err, "upsert")
 	}
 	for _, condition := range conditions {

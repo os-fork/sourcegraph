@@ -16,7 +16,6 @@ import (
 	subscriptionsv1connect "github.com/sourcegraph/sourcegraph/lib/enterpriseportal/subscriptions/v1/v1connect"
 	"github.com/sourcegraph/sourcegraph/lib/errors"
 	"github.com/sourcegraph/sourcegraph/lib/managedservicesplatform/iam"
-	"github.com/sourcegraph/sourcegraph/lib/pointers"
 
 	"github.com/sourcegraph/sourcegraph/cmd/enterprise-portal/internal/connectutil"
 	"github.com/sourcegraph/sourcegraph/cmd/enterprise-portal/internal/database"
@@ -75,8 +74,13 @@ func (s *handlerV1) ListEnterpriseSubscriptions(ctx context.Context, req *connec
 
 	// Validate and process filters.
 	filters := req.Msg.GetFilters()
-	isArchived := false
-	subscriptionIDs := make(collections.Set[string], len(filters))
+	var (
+		isArchived                *bool
+		subscriptionIDs           = make(collections.Set[string], len(filters))
+		displayNameSubstring      string
+		salesforceSubscriptionIDs []string
+		instanceDomains           []string
+	)
 	var iamListObjectOptions *iam.ListObjectsOptions
 	for _, filter := range filters {
 		switch f := filter.GetFilter().(type) {
@@ -90,7 +94,7 @@ func (s *handlerV1) ListEnterpriseSubscriptions(ctx context.Context, req *connec
 			subscriptionIDs.Add(
 				strings.TrimPrefix(f.SubscriptionId, subscriptionsv1.EnterpriseSubscriptionIDPrefix))
 		case *subscriptionsv1.ListEnterpriseSubscriptionsFilter_IsArchived:
-			isArchived = f.IsArchived
+			isArchived = &f.IsArchived
 		case *subscriptionsv1.ListEnterpriseSubscriptionsFilter_Permission:
 			if f.Permission == nil {
 				return nil, connect.NewError(
@@ -131,6 +135,39 @@ func (s *handlerV1) ListEnterpriseSubscriptions(ctx context.Context, req *connec
 					errors.Wrap(err, `invalid filter: "permission" provided but invalid`),
 				)
 			}
+		case *subscriptionsv1.ListEnterpriseSubscriptionsFilter_DisplayName:
+			if displayNameSubstring != "" {
+				return nil, connect.NewError(
+					connect.CodeInvalidArgument,
+					errors.Newf(`invalid filter: "display_name" provided more than once`),
+				)
+			}
+			const minLength = 3
+			if len(f.DisplayName) < minLength {
+				return nil, connect.NewError(
+					connect.CodeInvalidArgument,
+					errors.Newf(`invalid filter: "display_name" must be longer than %d characters`, minLength),
+				)
+			}
+			displayNameSubstring = f.DisplayName
+		case *subscriptionsv1.ListEnterpriseSubscriptionsFilter_Salesforce:
+			if f.Salesforce.SubscriptionId == "" {
+				return nil, connect.NewError(
+					connect.CodeInvalidArgument,
+					errors.Newf(`invalid filter: "salesforce.subscription_id" is empty`),
+				)
+			}
+			salesforceSubscriptionIDs = append(salesforceSubscriptionIDs,
+				f.Salesforce.SubscriptionId)
+		case *subscriptionsv1.ListEnterpriseSubscriptionsFilter_InstanceDomain:
+			domain, err := subscriptionsv1.NormalizeInstanceDomain(f.InstanceDomain)
+			if err != nil {
+				return nil, connect.NewError(
+					connect.CodeInvalidArgument,
+					errors.Wrap(err, `invalid filter: "domain" provided but invalid`),
+				)
+			}
+			instanceDomains = append(instanceDomains, domain)
 		}
 	}
 
@@ -166,51 +203,24 @@ func (s *handlerV1) ListEnterpriseSubscriptions(ctx context.Context, req *connec
 	subs, err := s.store.ListEnterpriseSubscriptions(
 		ctx,
 		subscriptions.ListEnterpriseSubscriptionsOptions{
-			IDs:        subscriptionIDs.Values(),
-			IsArchived: isArchived,
-			PageSize:   int(req.Msg.GetPageSize()),
+			IDs:                       subscriptionIDs.Values(),
+			IsArchived:                isArchived,
+			InstanceDomains:           instanceDomains,
+			DisplayNameSubstring:      displayNameSubstring,
+			SalesforceSubscriptionIDs: salesforceSubscriptionIDs,
+
+			PageSize: int(req.Msg.GetPageSize()),
 		},
 	)
 	if err != nil {
 		return nil, connectutil.InternalError(ctx, logger, err, "list subscriptions")
 	}
 
-	// List from dotcom DB and merge attributes.
-	dotcomSubscriptions, err := s.store.ListDotcomEnterpriseSubscriptions(ctx, dotcomdb.ListEnterpriseSubscriptionsOptions{
-		SubscriptionIDs: subscriptionIDs.Values(),
-		IsArchived:      isArchived,
-	})
-	if err != nil {
-		return nil, connectutil.InternalError(ctx, logger, err, "list subscriptions from dotcom DB")
-	}
-	dotcomSubscriptionsSet := make(map[string]*dotcomdb.SubscriptionAttributes, len(dotcomSubscriptions))
-	for _, s := range dotcomSubscriptions {
-		dotcomSubscriptionsSet[s.ID] = s
-	}
-
-	// Add the "real" subscriptions we already track to the results
-	respSubscriptions := make([]*subscriptionsv1.EnterpriseSubscription, 0, len(subs))
-	for _, s := range subs {
-		respSubscriptions = append(
-			respSubscriptions,
-			convertSubscriptionToProto(&s.Subscription, dotcomSubscriptionsSet[s.ID]),
-		)
-		delete(dotcomSubscriptionsSet, s.ID)
-	}
-
-	// Add any remaining dotcom subscriptions to the results set
-	for _, s := range dotcomSubscriptionsSet {
-		respSubscriptions = append(
-			respSubscriptions,
-			convertSubscriptionToProto(&subscriptions.Subscription{
-				ID: subscriptionsv1.EnterpriseSubscriptionIDPrefix + s.ID,
-			}, s),
-		)
-	}
-
 	accessedSubscriptions := map[string]struct{}{}
-	for _, s := range respSubscriptions {
-		accessedSubscriptions[s.GetId()] = struct{}{}
+	protoSubscriptions := make([]*subscriptionsv1.EnterpriseSubscription, len(subs))
+	for i, s := range subs {
+		protoSubscriptions[i] = convertSubscriptionToProto(s)
+		accessedSubscriptions[s.ID] = struct{}{}
 	}
 	logger.Scoped("audit").Info("ListEnterpriseSubscriptions",
 		log.Strings("accessedSubscriptions", maps.Keys(accessedSubscriptions)),
@@ -221,7 +231,7 @@ func (s *handlerV1) ListEnterpriseSubscriptions(ctx context.Context, req *connec
 			// Never a next page, pagination is not implemented yet:
 			// https://linear.app/sourcegraph/issue/CORE-134
 			NextPageToken: "",
-			Subscriptions: respSubscriptions,
+			Subscriptions: protoSubscriptions,
 		},
 	), nil
 }
@@ -244,17 +254,45 @@ func (s *handlerV1) ListEnterpriseSubscriptionLicenses(ctx context.Context, req 
 		return nil, connect.NewError(connect.CodeUnimplemented, errors.New("pagination not implemented"))
 	}
 
+	opts := subscriptions.ListLicensesOpts{
+		PageSize: int(req.Msg.GetPageSize()),
+	}
+
 	// Validate filters
 	filters := req.Msg.GetFilters()
 	for _, filter := range filters {
-		// TODO: Implement additional filtering as needed
 		switch f := filter.GetFilter().(type) {
 		case *subscriptionsv1.ListEnterpriseSubscriptionLicensesFilter_Type:
-			return nil, connect.NewError(connect.CodeUnimplemented,
-				errors.New("filtering by type is not implemented"))
+			if f.Type == 0 {
+				return nil, connect.NewError(
+					connect.CodeInvalidArgument,
+					errors.New(`invalid filter: "type" is not valid`),
+				)
+			}
+			if opts.LicenseType != 0 {
+				return nil, connect.NewError(
+					connect.CodeInvalidArgument,
+					errors.New(`invalid filter: "type" provided more than once`),
+				)
+			}
+			opts.LicenseType = f.Type
+
 		case *subscriptionsv1.ListEnterpriseSubscriptionLicensesFilter_LicenseKeySubstring:
-			return nil, connect.NewError(connect.CodeUnimplemented,
-				errors.New("filtering by license key substring is not implemented"))
+			const minLength = 3
+			if len(f.LicenseKeySubstring) < minLength {
+				return nil, connect.NewError(
+					connect.CodeInvalidArgument,
+					errors.Newf(`invalid filter: "license_key_substring" must be longer than %d characters`, minLength),
+				)
+			}
+			if opts.LicenseKeySubstring != "" {
+				return nil, connect.NewError(
+					connect.CodeInvalidArgument,
+					errors.New(`invalid filter: "license_key_substring"" provided multiple times`),
+				)
+			}
+			opts.LicenseKeySubstring = f.LicenseKeySubstring
+
 		case *subscriptionsv1.ListEnterpriseSubscriptionLicensesFilter_SubscriptionId:
 			if f.SubscriptionId == "" {
 				return nil, connect.NewError(
@@ -262,13 +300,41 @@ func (s *handlerV1) ListEnterpriseSubscriptionLicenses(ctx context.Context, req 
 					errors.New(`invalid filter: "subscription_id"" provided but is empty`),
 				)
 			}
+			if opts.SubscriptionID != "" {
+				return nil, connect.NewError(
+					connect.CodeInvalidArgument,
+					errors.New(`invalid filter: "subscription_id"" provided multiple times`),
+				)
+			}
+			opts.SubscriptionID = f.SubscriptionId
+
+		case *subscriptionsv1.ListEnterpriseSubscriptionLicensesFilter_SalesforceOpportunityId:
+			if f.SalesforceOpportunityId == "" {
+				return nil, connect.NewError(
+					connect.CodeInvalidArgument,
+					errors.New(`invalid filter: "salesforce_opportunity_id" provided but is empty`),
+				)
+			}
+			opts.SalesforceOpportunityID = f.SalesforceOpportunityId
 		}
 	}
 
-	licenses, err := s.store.ListDotcomEnterpriseSubscriptionLicenses(ctx, filters,
-		// Provide page size to allow "active license" functionality, by only
-		// retrieving the most recently created result.
-		int(req.Msg.GetPageSize()))
+	if opts.LicenseType != subscriptionsv1.EnterpriseSubscriptionLicenseType_ENTERPRISE_SUBSCRIPTION_LICENSE_TYPE_KEY {
+		if opts.LicenseKeySubstring != "" {
+			return nil, connect.NewError(
+				connect.CodeInvalidArgument,
+				errors.New(`invalid filters: "license_type" must be 'ENTERPRISE_SUBSCRIPTION_LICENSE_TYPE_KEY' to use the "license_key_substring" filter`),
+			)
+		}
+		if opts.SalesforceOpportunityID != "" {
+			return nil, connect.NewError(
+				connect.CodeInvalidArgument,
+				errors.New(`invalid filters: "license_type" must be 'ENTERPRISE_SUBSCRIPTION_LICENSE_TYPE_KEY' to use the "salesforce_opportunity_id" filter`),
+			)
+		}
+	}
+
+	licenses, err := s.store.ListEnterpriseSubscriptionLicenses(ctx, opts)
 	if err != nil {
 		if errors.Is(err, dotcomdb.ErrCodyGatewayAccessNotFound) {
 			return nil, connect.NewError(connect.CodeNotFound, err)
@@ -287,10 +353,15 @@ func (s *handlerV1) ListEnterpriseSubscriptionLicenses(ctx context.Context, req 
 	accessedSubscriptions := map[string]struct{}{}
 	accessedLicenses := make([]string, len(licenses))
 	for i, l := range licenses {
-		resp.Licenses[i] = convertLicenseAttrsToProto(l)
+		resp.Licenses[i], err = convertLicenseToProto(l)
+		if err != nil {
+			return nil, connectutil.InternalError(ctx, logger, err,
+				"failed to read Enterprise Subscription license")
+		}
 		accessedSubscriptions[resp.Licenses[i].GetSubscriptionId()] = struct{}{}
 		accessedLicenses[i] = resp.Licenses[i].GetId()
 	}
+
 	logger.Scoped("audit").Info("ListEnterpriseSubscriptionLicenses",
 		log.Strings("accessedSubscriptions", maps.Keys(accessedSubscriptions)),
 		log.Strings("accessedLicenses", accessedLicenses))
@@ -313,47 +384,34 @@ func (s *handlerV1) UpdateEnterpriseSubscription(ctx context.Context, req *conne
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("subscription.id is required"))
 	}
 
-	// TEMPORARY: Double check with the dotcom DB that the subscription ID is valid.
-	// This currently ensures we never actually create new subscriptions.
-	subscriptionAttrs, err := s.store.ListDotcomEnterpriseSubscriptions(ctx, dotcomdb.ListEnterpriseSubscriptionsOptions{
-		SubscriptionIDs: []string{subscriptionID},
-	})
-	if err != nil {
-		return nil, connectutil.InternalError(ctx, logger, err, "get dotcom enterprise subscription")
-	} else if len(subscriptionAttrs) != 1 {
-		return nil, connect.NewError(connect.CodeNotFound, errors.New("subscription not found"))
-	}
-
 	var opts subscriptions.UpsertSubscriptionOptions
 
 	fieldPaths := req.Msg.GetUpdateMask().GetPaths()
 	// Empty field paths means update all non-empty fields.
 	if len(fieldPaths) == 0 {
 		if v := req.Msg.GetSubscription().GetInstanceDomain(); v != "" {
-			opts.InstanceDomain = pointers.Ptr(database.NewNullString(v))
+			opts.InstanceDomain = database.NewNullString(v)
 		}
 		if v := req.Msg.GetSubscription().GetDisplayName(); v != "" {
-			opts.DisplayName = pointers.Ptr(database.NewNullString(v))
+			opts.DisplayName = database.NewNullString(v)
 		}
 	} else {
 		for _, p := range fieldPaths {
 			switch p {
 			case "instance_domain":
-				opts.InstanceDomain = pointers.Ptr(
-					database.NewNullString(req.Msg.GetSubscription().GetInstanceDomain()),
-				)
+				opts.InstanceDomain =
+					database.NewNullString(req.Msg.GetSubscription().GetInstanceDomain())
 			case "display_name":
-				opts.DisplayName = pointers.Ptr(
-					database.NewNullString(req.Msg.GetSubscription().GetDisplayName()),
-				)
+				opts.DisplayName =
+					database.NewNullString(req.Msg.GetSubscription().GetDisplayName())
 			case "*":
 				opts.ForceUpdate = true
-				opts.InstanceDomain = pointers.Ptr(
-					database.NewNullString(req.Msg.GetSubscription().GetInstanceDomain()),
-				)
-				opts.DisplayName = pointers.Ptr(
-					database.NewNullString(req.Msg.GetSubscription().GetDisplayName()),
-				)
+				opts.InstanceDomain =
+					database.NewNullString(req.Msg.GetSubscription().GetInstanceDomain())
+				opts.DisplayName =
+					database.NewNullString(req.Msg.GetSubscription().GetDisplayName())
+			default:
+				return nil, connect.NewError(connect.CodeInvalidArgument, errors.Newf("unknown field path: %s", p))
 			}
 		}
 	}
@@ -372,7 +430,7 @@ func (s *handlerV1) UpdateEnterpriseSubscription(ctx context.Context, req *conne
 		return nil, connectutil.InternalError(ctx, logger, err, "upsert subscription")
 	}
 
-	respSubscription := convertSubscriptionToProto(&subscription.Subscription, subscriptionAttrs[0])
+	respSubscription := convertSubscriptionToProto(subscription)
 	logger.Scoped("audit").Info("UpdateEnterpriseSubscription",
 		log.String("updatedSubscription", respSubscription.GetId()),
 	)
@@ -418,9 +476,9 @@ func (s *handlerV1) UpdateEnterpriseSubscriptionMembership(ctx context.Context, 
 	}
 
 	if subscriptionID != "" {
-		// Double check with the dotcom DB that the subscription ID is valid.
-		subscriptionAttrs, err := s.store.ListDotcomEnterpriseSubscriptions(ctx, dotcomdb.ListEnterpriseSubscriptionsOptions{
-			SubscriptionIDs: []string{subscriptionID},
+		// Double check that the subscription ID is valid.
+		subscriptionAttrs, err := s.store.ListEnterpriseSubscriptions(ctx, subscriptions.ListEnterpriseSubscriptionsOptions{
+			IDs: []string{subscriptionID},
 		})
 		if err != nil {
 			return nil, connectutil.InternalError(ctx, logger, err, "get dotcom enterprise subscription")

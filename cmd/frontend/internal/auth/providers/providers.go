@@ -9,6 +9,7 @@ import (
 
 	"github.com/inconshreveable/log15" //nolint:logging // TODO move all logging to sourcegraph/log
 
+	"github.com/sourcegraph/sourcegraph/internal/auth"
 	"github.com/sourcegraph/sourcegraph/internal/extsvc"
 	"github.com/sourcegraph/sourcegraph/schema"
 )
@@ -37,9 +38,6 @@ type Provider interface {
 
 	// CachedInfo returns cached information about the provider.
 	CachedInfo() *Info
-
-	// Refresh refreshes the provider's information with an external service, if any.
-	Refresh(ctx context.Context) error
 
 	// ExternalAccountInfo provides basic external account from this auth provider
 	ExternalAccountInfo(ctx context.Context, account extsvc.Account) (*extsvc.PublicAccountData, error)
@@ -156,10 +154,13 @@ func Providers() []Provider {
 
 // SignInProviders returns the list of currently registered authentication providers that aren't hidden.
 // The list is not sorted in any way.
-func SignInProviders() []Provider {
+func SignInProviders(skipSoap bool) []Provider {
 	if MockProviders != nil {
 		providers := make([]Provider, 0, len(MockProviders))
 		for _, p := range MockProviders {
+			if skipSoap && p.ConfigID().Type == auth.SourcegraphOperatorProviderType {
+				continue
+			}
 			common := GetAuthProviderCommon(p)
 			if !common.Hidden && !common.NoSignIn {
 				providers = append(providers, p)
@@ -182,6 +183,9 @@ func SignInProviders() []Provider {
 	providers := make([]Provider, 0, ct)
 	for _, pkgProviders := range curProviders {
 		for _, p := range pkgProviders {
+			if skipSoap && p.ConfigID().Type == auth.SourcegraphOperatorProviderType {
+				continue
+			}
 			common := GetAuthProviderCommon(p)
 			if !common.Hidden && !common.NoSignIn {
 				providers = append(providers, p)

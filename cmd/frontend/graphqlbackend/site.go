@@ -15,7 +15,6 @@ import (
 	"github.com/graph-gophers/graphql-go/relay"
 	"github.com/sourcegraph/log"
 
-	"github.com/sourcegraph/sourcegraph/cmd/frontend/graphqlbackend/graphqlutil"
 	"github.com/sourcegraph/sourcegraph/cmd/frontend/internal/cody"
 	"github.com/sourcegraph/sourcegraph/internal/actor"
 	"github.com/sourcegraph/sourcegraph/internal/auth"
@@ -46,8 +45,6 @@ import (
 	"github.com/sourcegraph/sourcegraph/lib/errors"
 	"github.com/sourcegraph/sourcegraph/lib/output"
 	"github.com/sourcegraph/sourcegraph/lib/pointers"
-
-	"github.com/sourcegraph/sourcegraph/cmd/frontend/globals"
 )
 
 const singletonSiteGQLID = "site"
@@ -278,7 +275,7 @@ func (r *siteConfigurationResolver) ValidationMessages(ctx context.Context) ([]s
 	return conf.ValidateSite(string(contents))
 }
 
-func (r *siteConfigurationResolver) History(ctx context.Context, args *graphqlutil.ConnectionResolverArgs) (*graphqlutil.ConnectionResolver[*SiteConfigurationChangeResolver], error) {
+func (r *siteConfigurationResolver) History(ctx context.Context, args *gqlutil.ConnectionResolverArgs) (*gqlutil.ConnectionResolver[*SiteConfigurationChangeResolver], error) {
 	// 🚨 SECURITY: The site configuration contains secret tokens and credentials,
 	// so only admins may view the history.
 	if err := auth.CheckCurrentUserIsSiteAdmin(ctx, r.db); err != nil {
@@ -287,7 +284,7 @@ func (r *siteConfigurationResolver) History(ctx context.Context, args *graphqlut
 
 	connectionStore := SiteConfigurationChangeConnectionStore{db: r.db}
 
-	return graphqlutil.NewConnectionResolver[*SiteConfigurationChangeResolver](
+	return gqlutil.NewConnectionResolver[*SiteConfigurationChangeResolver](
 		&connectionStore,
 		args,
 		nil,
@@ -338,8 +335,7 @@ func (r *schemaResolver) UpdateSiteConfiguration(ctx context.Context, args *stru
 
 	prev.Site = unredacted
 
-	server := globals.ConfigurationServerFrontendOnly
-	if err := server.Write(ctx, prev, args.LastID, actor.FromContext(ctx).UID); err != nil {
+	if err := r.configurationServer.Write(ctx, prev, args.LastID, actor.FromContext(ctx).UID); err != nil {
 		return false, err
 	}
 
@@ -350,7 +346,7 @@ func (r *schemaResolver) UpdateSiteConfiguration(ctx context.Context, args *stru
 			r.logger.Warn("Error logging security event", log.Error(err))
 		}
 	}
-	return server.NeedServerRestart(), nil
+	return r.configurationServer.NeedServerRestart(), nil
 }
 
 var siteConfigAllowEdits, _ = strconv.ParseBool(env.Get("SITE_CONFIG_ALLOW_EDITS", "false", "When SITE_CONFIG_FILE is in use, allow edits in the application to be made which will be overwritten on next process restart"))

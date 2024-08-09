@@ -109,8 +109,8 @@
   interfaces:
     - Store
     - DistributedStore
-- filename: cmd/frontend/backend/mocks_temp.go
-  path: github.com/sourcegraph/sourcegraph/cmd/frontend/backend
+- filename: cmd/frontend/internal/backend/mocks_temp.go
+  path: github.com/sourcegraph/sourcegraph/cmd/frontend/internal/backend
   interfaces:
     - UserEmailsService
     - ReposService
@@ -185,3 +185,8 @@
       interfaces:
         - DataStore
         - SCIPWriter
+- filename: internal/codeintel/uploads/internal/storemocks/mocks_temp.go
+  sources:
+    - path: github.com/sourcegraph/sourcegraph/internal/codeintel/uploads/internal/store
+      interfaces:
+        - Store

@@ -11,6 +11,11 @@ const config: PlaywrightTestConfig = {
               command: 'pnpm build:preview && pnpm preview',
               port: PORT,
               reuseExistingServer: true,
+              env: {
+                  // Disable proxying to a real Sourcegraph instance in local testing
+                  SK_DISABLE_PROXY: 'true',
+              },
+              timeout: 5 * 60_000,
           }
         : undefined,
     reporter: 'list',

@@ -2,8 +2,6 @@ package resolvers
 
 import (
 	"context"
-	"encoding/base64"
-	"encoding/json"
 	"fmt"
 	"path"
 	"strings"
@@ -13,13 +11,13 @@ import (
 
 	"github.com/sourcegraph/scip/bindings/go/scip"
 
-	"github.com/sourcegraph/sourcegraph/cmd/frontend/graphqlbackend/graphqlutil"
 	"github.com/sourcegraph/sourcegraph/internal/api"
 	"github.com/sourcegraph/sourcegraph/internal/codeintel/codenav"
 	"github.com/sourcegraph/sourcegraph/internal/codeintel/core"
 	"github.com/sourcegraph/sourcegraph/internal/codeintel/uploads/shared"
 	"github.com/sourcegraph/sourcegraph/internal/database"
 	"github.com/sourcegraph/sourcegraph/internal/gitserver"
+	"github.com/sourcegraph/sourcegraph/internal/gqlutil"
 	"github.com/sourcegraph/sourcegraph/internal/markdown"
 	"github.com/sourcegraph/sourcegraph/internal/types"
 	"github.com/sourcegraph/sourcegraph/lib/errors"
@@ -258,20 +256,21 @@ type OccurrencesArgs struct {
 	After *string
 }
 
-// Normalize returns args for convenience of chaining
+// Normalize returns a normalized copy of args.
 func (args *OccurrencesArgs) Normalize(maxPageSize int32) *OccurrencesArgs {
-	if args == nil {
-		*args = OccurrencesArgs{}
+	var out OccurrencesArgs
+	if args != nil {
+		out = *args
 	}
-	if args.First == nil || *args.First > maxPageSize {
-		args.First = &maxPageSize
+	if out.First == nil || *out.First > maxPageSize {
+		out.First = &maxPageSize
 	}
-	return args
+	return &out
 }
 
 type SCIPOccurrenceConnectionResolver interface {
 	ConnectionResolver[SCIPOccurrenceResolver]
-	PageInfo(ctx context.Context) (*graphqlutil.ConnectionPageInfo[SCIPOccurrenceResolver], error)
+	PageInfo(ctx context.Context) (*gqlutil.ConnectionPageInfo[SCIPOccurrenceResolver], error)
 }
 
 type SCIPOccurrenceResolver interface {
@@ -342,15 +341,12 @@ func (args *UsagesForSymbolArgs) Resolve(
 	}
 	var cursor codenav.UsagesCursor
 	if args.After != nil {
-		bytes, err := base64.StdEncoding.DecodeString(*args.After)
+		cursor, err = codenav.DecodeUsagesCursor(*args.After)
 		if err != nil {
 			return out, errors.Wrap(err, "invalid after: cursor")
 		}
-		if err = json.Unmarshal(bytes, &cursor); err != nil {
-			return out, errors.Wrap(err, "invalid after: cursor")
-		}
 	} else {
-		cursor.PreciseCursorType = codenav.CursorTypeDefinitions
+		cursor = codenav.InitialCursor(resolvedSymbol.ProvenancesForSCIPData())
 	}
 
 	scipRange, err := scip.NewRange([]int32{
@@ -533,7 +529,7 @@ type UsageResolver interface {
 	Symbol(context.Context) (SymbolInformationResolver, error)
 	Provenance(context.Context) (codenav.CodeGraphDataProvenance, error)
 	DataSource() *string
-	UsageRange(context.Context) (UsageRangeResolver, error)
+	UsageRange(context.Context) UsageRangeResolver
 	SurroundingContent(_ context.Context) string
 	UsageKind() SymbolUsageKind
 }
